@@ -2,10 +2,13 @@
   "name": "real-estate-opportunity-map",
   "version": "0.1.0",
   "private": true,
-  "description": "Choropleth map of Sydney suburbs coloured by recent price trend — green = falling (opportunity), red = flat/rising.",
+  "description": "Choropleth map of Sydney and Brisbane suburbs coloured by real recent price trends — green = falling (opportunity), red = flat/rising.",
   "scripts": {
     "start": "node server.js",
-    "build:suburbs": "node scripts/build-suburbs.js",
-    "build:market": "node scripts/generate-market.js"
+    "fetch:sydney": "bash scripts/fetch-nsw-sales.sh",
+    "build:sydney": "node scripts/build-market-sydney.js",
+    "fetch:brisbane": "node scripts/fetch-brisbane-data.js",
+    "build:brisbane": "node scripts/build-market-brisbane.js",
+    "build:sydney-boundaries": "node scripts/build-suburbs.js"
   }
 }

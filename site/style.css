@@ -64,6 +64,28 @@ body {
 }
 .search-block input:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
 
+.city-switch {
+  display: flex;
+  gap: 4px;
+  padding: 3px;
+  background: var(--page);
+  border: 1px solid var(--hairline);
+  border-radius: 10px;
+}
+.city-btn {
+  padding: 6px 14px;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink-2);
+  background: none;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.city-btn.active { background: var(--surface); color: var(--ink); box-shadow: 0 1px 2px rgba(0,0,0,0.12); }
+.city-btn:not(.active):hover { color: var(--ink); }
+
 .layout { flex: 1; display: flex; min-height: 0; }
 #map { flex: 1; min-width: 0; background: var(--page); }
 

@@ -1,10 +1,27 @@
-/* Suburb Opportunity Map
+/* Suburb Opportunity Map — real data edition.
  * Green = median values falling (opportunity), red = flat/still rising.
- * Data comes from data/suburbs.geojson (boundaries) + data/market.json
- * (sales/valuations — currently generated sample data, see scripts/).
+ * Sydney: NSW Valuer General bulk property sales (individual sales records).
+ * Brisbane: QGSO Housing Profiles (QVAS) + ABS Data by region annual medians.
  */
 
 "use strict";
+
+const CITIES = {
+  sydney: {
+    label: "Sydney",
+    dir: "data/sydney",
+    center: [-33.85, 151.08],
+    zoom: 11,
+    areaWord: "suburb",
+  },
+  brisbane: {
+    label: "Brisbane",
+    dir: "data/brisbane",
+    center: [-27.47, 153.02],
+    zoom: 10,
+    areaWord: "SA2 area",
+  },
+};
 
 // --- diverging colour scale (green arm = falling, red arm = rising) -------
 // Monotone-lightness arms with a neutral grey midpoint; the % labels on the
@@ -18,6 +35,7 @@ const BUCKETS = [
   { max: 1.5, color: "#e06a4a", label: "Rising 0.75–1.5%/mo" },
   { max: Infinity, color: "#b02e23", label: "Rising ≥ 1.5%/mo — holding expensive" },
 ];
+const NO_DATA_COLOR = "#b8b6b0";
 
 function bucketColor(pct) {
   for (const b of BUCKETS) if (pct < b.max || b.max === Infinity) return b.color;
@@ -25,15 +43,17 @@ function bucketColor(pct) {
 }
 
 const fmtMoney = (v) =>
-  v >= 1_000_000 ? `$${(v / 1_000_000).toFixed(2)}M` : `$${Math.round(v / 1000)}K`;
+  v == null ? "—" : v >= 1_000_000 ? `$${(v / 1_000_000).toFixed(2)}M` : `$${Math.round(v / 1000)}K`;
 const fmtRate = (pct) => {
+  if (pct == null) return { cls: "flat", text: "no data" };
   if (pct <= -0.25) return { cls: "down", text: `▼ ${Math.abs(pct).toFixed(1)}%/mo` };
   if (pct >= 0.25) return { cls: "up", text: `▲ ${pct.toFixed(1)}%/mo` };
   return { cls: "flat", text: "◆ flat" };
 };
+const rateSpanCls = (cls) => (cls === "down" ? "rate-down" : cls === "up" ? "rate-up" : "rate-flat");
 
 // --- map ------------------------------------------------------------------
-const map = L.map("map", { zoomControl: true }).setView([-33.85, 151.08], 11);
+const map = L.map("map", { zoomControl: true }).setView(CITIES.sydney.center, CITIES.sydney.zoom);
 window.__map = map; // console/debug handle
 
 const darkQuery = window.matchMedia("(prefers-color-scheme: dark)");
@@ -46,7 +66,7 @@ function setTiles() {
     {
       maxZoom: 18,
       attribution:
-        '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/">CARTO</a> · boundaries: PSMA via GeoJson-Data · sample market data',
+        '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/">CARTO</a> · <span id="attrib-source"></span>',
     }
   ).addTo(map);
   tileLayer.bringToBack();
@@ -54,36 +74,63 @@ function setTiles() {
 setTiles();
 darkQuery.addEventListener("change", setTiles);
 
-// --- load data ------------------------------------------------------------
+// --- state ----------------------------------------------------------------
+let currentCity = "sydney";
 let market = {};
+let marketMeta = {};
 let geoLayer = null;
-const labelLayer = L.layerGroup();
+let labelLayer = L.layerGroup();
 const suburbIndex = new Map(); // name -> { layer, centroid, stats }
-
-Promise.all([
-  fetch("data/suburbs.geojson").then((r) => r.json()),
-  fetch("data/market.json").then((r) => r.json()),
-]).then(([geo, mkt]) => {
-  market = mkt.suburbs;
-  buildChoropleth(geo);
-  buildLabels(geo);
-  buildLegend();
-  buildOpportunityList();
-  buildSearch();
-  syncLabelVisibility();
-});
+let defaultPanelHtml = "";
+const panelContent = document.getElementById("panel-content");
 
 function baseStyle(feature) {
   const stats = market[feature.properties.name];
+  const hasTrend = stats && stats.monthlyChangePct != null;
   return {
-    fillColor: stats ? bucketColor(stats.monthlyChangePct) : "#cfcdc6",
-    fillOpacity: 0.55,
+    fillColor: hasTrend ? bucketColor(stats.monthlyChangePct) : NO_DATA_COLOR,
+    fillOpacity: hasTrend ? 0.55 : 0.18,
     color: darkQuery.matches ? "rgba(255,255,255,0.35)" : "rgba(11,11,11,0.30)",
     weight: 1,
+    dashArray: hasTrend ? null : "3 3",
   };
 }
 
-function buildChoropleth(geo) {
+async function loadCity(city) {
+  currentCity = city;
+  const cfg = CITIES[city];
+  document.querySelectorAll(".city-btn").forEach((b) => {
+    const active = b.id === `city-${city}`;
+    b.classList.toggle("active", active);
+    b.setAttribute("aria-selected", String(active));
+  });
+  document.getElementById("subtitle").textContent = `Loading ${cfg.label}…`;
+
+  if (geoLayer) { map.removeLayer(geoLayer); geoLayer = null; }
+  labelLayer.clearLayers();
+  suburbIndex.clear();
+
+  const [geo, mkt] = await Promise.all([
+    fetch(`${cfg.dir}/suburbs.geojson`).then((r) => r.json()),
+    fetch(`${cfg.dir}/market.json`).then((r) => r.json()),
+  ]);
+  market = mkt.suburbs;
+  marketMeta = mkt;
+
+  document.getElementById("subtitle").innerHTML =
+    `${cfg.label} · real ${mkt.trendLabel || "price trend"} · updated ${mkt.generatedAt}`;
+  const attrib = document.getElementById("attrib-source");
+  if (attrib) attrib.textContent = mkt.source;
+
+  buildChoropleth(geo, cfg);
+  buildLabels(geo);
+  buildOpportunityList(cfg);
+  buildSearch();
+  map.setView(cfg.center, cfg.zoom);
+  syncLabelVisibility();
+}
+
+function buildChoropleth(geo, cfg) {
   geoLayer = L.geoJSON(geo, {
     style: baseStyle,
     onEachFeature: (feature, layer) => {
@@ -92,7 +139,7 @@ function buildChoropleth(geo) {
       suburbIndex.set(name, { layer, centroid: feature.properties.centroid, stats });
       const rate = stats ? fmtRate(stats.monthlyChangePct) : { text: "no data" };
       layer.bindTooltip(
-        `<strong>${name}</strong><br>${stats ? fmtMoney(stats.medianValue) + " median · " + rate.text : "no data"}`,
+        `<strong>${name}</strong><br>${stats && stats.medianValue ? fmtMoney(stats.medianValue) + " median · " + rate.text : "insufficient sales data"}`,
         { sticky: true, className: "suburb-tip" }
       );
       layer.on({
@@ -105,6 +152,7 @@ function buildChoropleth(geo) {
       });
     },
   }).addTo(map);
+  buildLegend();
 }
 
 // --- rate labels on suburbs ----------------------------------------------
@@ -112,7 +160,7 @@ function buildLabels(geo) {
   for (const f of geo.features) {
     const name = f.properties.name;
     const stats = market[name];
-    if (!stats) continue;
+    if (!stats || stats.monthlyChangePct == null) continue;
     const rate = fmtRate(stats.monthlyChangePct);
     const icon = L.divIcon({
       className: "rate-pill",
@@ -140,44 +188,57 @@ nameCss.textContent = "#map:not(.show-names) .pill-name{display:none}";
 document.head.appendChild(nameCss);
 
 // --- legend ---------------------------------------------------------------
+let legendControl = null;
 function buildLegend() {
-  const legend = L.control({ position: "bottomleft" });
-  legend.onAdd = () => {
+  if (legendControl) map.removeControl(legendControl);
+  legendControl = L.control({ position: "bottomleft" });
+  legendControl.onAdd = () => {
     const div = L.DomUtil.create("div", "legend");
     div.innerHTML =
-      "<h3>Median price trend (6 mo)</h3>" +
+      `<h3>Median price trend (${marketMeta.trendLabel || ""})</h3>` +
       BUCKETS.map(
         (b) =>
           `<div class="legend-row"><span class="legend-swatch" style="background:${b.color}"></span>${b.label}</div>`
       ).join("") +
-      '<div class="legend-note">Green suburbs are cooling — potential buying opportunities. Red suburbs are flat or still climbing.</div>';
+      `<div class="legend-row"><span class="legend-swatch" style="background:${NO_DATA_COLOR};opacity:.4;border-style:dashed"></span>Insufficient sales data</div>` +
+      '<div class="legend-note">Green areas are cooling — potential buying opportunities. Red areas are flat or still climbing.</div>';
     return div;
   };
-  legend.addTo(map);
+  legendControl.addTo(map);
 }
 
 // --- side panel -----------------------------------------------------------
-const panelContent = document.getElementById("panel-content");
-
-function buildOpportunityList() {
-  const list = document.getElementById("opportunity-list");
+function buildOpportunityList(cfg) {
   const top = [...suburbIndex.entries()]
-    .filter(([, v]) => v.stats)
+    .filter(([, v]) => v.stats && v.stats.monthlyChangePct != null)
     .sort((a, b) => a[1].stats.monthlyChangePct - b[1].stats.monthlyChangePct)
     .slice(0, 15);
-  list.innerHTML = "";
+  panelContent.innerHTML = `
+    <h2 class="panel-heading">Top opportunities — ${cfg.label}</h2>
+    <p class="panel-hint">${cfg.areaWord[0].toUpperCase() + cfg.areaWord.slice(1)}s with the fastest-falling median values (${marketMeta.trendLabel}). Click one — or any area on the map — for detail.</p>
+    <ol class="opportunity-list" id="opportunity-list"></ol>
+    <p class="panel-hint" style="margin-top:12px">${marketMeta.source}</p>`;
+  const list = document.getElementById("opportunity-list");
   for (const [name, v] of top) {
     const li = document.createElement("li");
     const btn = document.createElement("button");
     const rate = fmtRate(v.stats.monthlyChangePct);
-    btn.innerHTML = `<span>${name}</span><span class="${rate.cls === "down" ? "rate-down" : rate.cls === "up" ? "rate-up" : "rate-flat"}">${rate.text}</span>`;
+    const n = v.stats.salesInWindow;
+    btn.innerHTML = `<span>${name}${n ? ` <span style="color:var(--muted);font-size:11px">· ${n} sales</span>` : ""}</span><span class="${rateSpanCls(rate.cls)}">${rate.text}</span>`;
     btn.addEventListener("click", () => flyToSuburb(name));
     li.appendChild(btn);
     list.appendChild(li);
   }
   defaultPanelHtml = panelContent.innerHTML;
 }
-let defaultPanelHtml = "";
+
+function restoreDefaultPanel() {
+  panelContent.innerHTML = defaultPanelHtml;
+  panelContent.querySelectorAll(".opportunity-list button").forEach((btn) => {
+    const name = btn.querySelector("span").textContent;
+    btn.addEventListener("click", () => flyToSuburb(name));
+  });
+}
 
 function flyToSuburb(name) {
   const entry = suburbIndex.get(name);
@@ -188,6 +249,7 @@ function flyToSuburb(name) {
 }
 
 function sparklineSvg(history) {
+  if (!history || history.length < 2) return '<p class="panel-hint">Not enough history.</p>';
   const w = 300, h = 72, pad = 4;
   const values = history.map((p) => p.median);
   const min = Math.min(...values), max = Math.max(...values);
@@ -205,48 +267,68 @@ function sparklineSvg(history) {
   </svg>`;
 }
 
+function salesSectionHtml(s) {
+  if (s.sales && s.sales.length) {
+    const rows = s.sales
+      .map(
+        (sale) =>
+          `<tr><td>${sale.date.slice(2)}</td><td>${sale.address}<br><span style="color:var(--muted)">${sale.type}</span></td><td class="price">${fmtMoney(sale.price)}</td></tr>`
+      )
+      .join("");
+    return `<div class="section-label">Recent sales (${s.sales.length} most recent)</div>
+      <table class="sales-table">
+        <thead><tr><th>Date</th><th>Property</th><th class="price">Price</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>`;
+  }
+  if (s.salesSummary) {
+    const sum = s.salesSummary;
+    const row = (label, d) =>
+      d && (d.count != null || d.median != null)
+        ? `<tr><td>${label}</td><td class="price">${d.count ?? "—"}</td><td class="price">${fmtMoney(d.median)}</td></tr>`
+        : "";
+    const prior = (sum.priorYears || [])
+      .map(
+        (y) =>
+          `<tr><td>${y.year}</td><td class="price">${y.houseCount ?? "—"}</td><td class="price">${fmtMoney(y.houseMedian)}</td><td class="price">${y.unitCount ?? "—"}</td><td class="price">${fmtMoney(y.unitMedian)}</td></tr>`
+      )
+      .join("");
+    return `<div class="section-label">Sales — ${sum.period}</div>
+      <table class="sales-table">
+        <thead><tr><th>Dwellings</th><th class="price">Sales</th><th class="price">Median</th></tr></thead>
+        <tbody>${row("Houses", sum.detached)}${row("Units", sum.attached)}${row("All", sum.total)}</tbody>
+      </table>
+      <div class="section-label">Prior years (ABS, year ended 30 June)</div>
+      <table class="sales-table">
+        <thead><tr><th>Year</th><th class="price">House sales</th><th class="price">Median</th><th class="price">Unit sales</th><th class="price">Median</th></tr></thead>
+        <tbody>${prior}</tbody>
+      </table>`;
+  }
+  return '<p class="panel-hint">No sales data available for this area.</p>';
+}
+
 function showDetail(name) {
   const entry = suburbIndex.get(name);
   if (!entry || !entry.stats) return;
   const s = entry.stats;
   const rate = fmtRate(s.monthlyChangePct);
-  const rateCls = rate.cls === "down" ? "rate-down" : rate.cls === "up" ? "rate-up" : "rate-flat";
-  const first = s.history[0], last = s.history[s.history.length - 1];
-  const rows = s.sales
-    .map(
-      (sale) =>
-        `<tr><td>${sale.date.slice(5)}</td><td>${sale.address}<br><span style="color:var(--muted)">${sale.type} · ${sale.beds} bed ${sale.baths} bath</span></td><td class="price">${fmtMoney(sale.price)}</td></tr>`
-    )
-    .join("");
+  const longChange = s.change12mPct ?? s.change18mPct;
+  const longLabel = s.change12mPct != null ? "12 months" : "Since FY2024";
   panelContent.innerHTML = `
     <button class="detail-back" id="detail-back">← Top opportunities</button>
     <h2 class="detail-name">${name}</h2>
     <div class="stat-row">
-      <div class="stat-tile"><div class="stat-label">Median value</div><div class="stat-value">${fmtMoney(s.medianValue)}</div></div>
-      <div class="stat-tile"><div class="stat-label">Monthly trend</div><div class="stat-value ${rateCls}">${rate.text}</div></div>
-      <div class="stat-tile"><div class="stat-label">12 months</div><div class="stat-value ${s.change12mPct <= -0.5 ? "rate-down" : s.change12mPct >= 0.5 ? "rate-up" : "rate-flat"}">${s.change12mPct > 0 ? "+" : ""}${s.change12mPct}%</div></div>
+      <div class="stat-tile"><div class="stat-label">Median (${s.medianAsOf || "latest"})</div><div class="stat-value">${fmtMoney(s.medianValue)}</div></div>
+      <div class="stat-tile"><div class="stat-label">${marketMeta.trendLabel || "Trend"}${s.trendClass ? ` (${s.trendClass})` : ""}</div><div class="stat-value ${rateSpanCls(rate.cls)}">${rate.text}</div></div>
+      <div class="stat-tile"><div class="stat-label">${longLabel}</div><div class="stat-value ${longChange == null ? "rate-flat" : longChange <= -0.5 ? "rate-down" : longChange >= 0.5 ? "rate-up" : "rate-flat"}">${longChange == null ? "—" : (longChange > 0 ? "+" : "") + longChange + "%"}</div></div>
     </div>
-    <div class="section-label">Median — last 24 months</div>
+    <div class="section-label">Median history${s.trendClass ? ` — ${s.trendClass}` : ""}</div>
     <div class="sparkline-wrap">${sparklineSvg(s.history)}
-      <div class="spark-caption"><span>${first.month} · ${fmtMoney(first.median)}</span><span>${last.month} · ${fmtMoney(last.median)}</span></div>
+      ${s.history && s.history.length >= 2 ? `<div class="spark-caption"><span>${s.history[0].month} · ${fmtMoney(s.history[0].median)}</span><span>${s.history[s.history.length - 1].month} · ${fmtMoney(s.history[s.history.length - 1].median)}</span></div>` : ""}
     </div>
-    <div class="section-label">Recent sales (${s.sales.length})</div>
-    <table class="sales-table">
-      <thead><tr><th>Date</th><th>Property</th><th class="price">Price</th></tr></thead>
-      <tbody>${rows}</tbody>
-    </table>`;
-  document.getElementById("detail-back").addEventListener("click", () => {
-    panelContent.innerHTML = defaultPanelHtml;
-    rebindOpportunityList();
-  });
+    ${salesSectionHtml(s)}`;
+  document.getElementById("detail-back").addEventListener("click", restoreDefaultPanel);
   document.getElementById("panel").scrollTop = 0;
-}
-
-function rebindOpportunityList() {
-  panelContent.querySelectorAll(".opportunity-list button").forEach((btn) => {
-    const name = btn.querySelector("span").textContent;
-    btn.addEventListener("click", () => flyToSuburb(name));
-  });
 }
 
 // --- search ---------------------------------------------------------------
@@ -255,11 +337,17 @@ function buildSearch() {
   const names = [...suburbIndex.keys()].sort();
   datalist.innerHTML = names.map((n) => `<option value="${n}"></option>`).join("");
   const input = document.getElementById("search");
-  input.addEventListener("change", () => {
+  input.value = "";
+  input.onchange = () => {
     const match = names.find((n) => n.toLowerCase() === input.value.trim().toLowerCase());
     if (match) {
       flyToSuburb(match);
       input.blur();
     }
-  });
+  };
 }
+
+// --- boot -----------------------------------------------------------------
+document.getElementById("city-sydney").addEventListener("click", () => loadCity("sydney"));
+document.getElementById("city-brisbane").addEventListener("click", () => loadCity("brisbane"));
+loadCity("sydney");
