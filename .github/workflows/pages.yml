@@ -1,10 +1,8 @@
 name: Deploy to GitHub Pages
 
-# NOTE: Pages needs either a public repo or GitHub Pro (private repo).
-# Manual trigger only until Pages is enabled on the repo — then restore:
-#   push:
-#     branches: [main]
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
