@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Suburb Opportunity Map — Sydney</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="title-block">
+      <h1>Suburb Opportunity Map</h1>
+      <p class="subtitle">Sydney · price trend over the last 6 months · <span class="disclaimer">sample data — not real valuations</span></p>
+    </div>
+    <div class="search-block">
+      <input id="search" type="search" list="suburb-list" placeholder="Find a suburb…" autocomplete="off" />
+      <datalist id="suburb-list"></datalist>
+    </div>
+  </header>
+
+  <main class="layout">
+    <div id="map" role="application" aria-label="Choropleth map of Sydney suburbs coloured by price trend"></div>
+
+    <aside class="panel" id="panel">
+      <div id="panel-content">
+        <h2 class="panel-heading">Top opportunities</h2>
+        <p class="panel-hint">Suburbs with the fastest-falling median values. Click one — or any suburb on the map — for detail.</p>
+        <ol class="opportunity-list" id="opportunity-list"></ol>
+      </div>
+    </aside>
+  </main>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+    integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+  <script src="app.js"></script>
+</body>
+</html>
