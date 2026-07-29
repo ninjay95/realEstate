@@ -71,9 +71,11 @@ for (const file of files) {
     const houseNo = (f[7] || "").trim();
     const street = (f[8] || "").trim();
     const addr = `${unitNo ? unitNo + "/" : ""}${houseNo} ${street}`.trim();
+    const postcode = (f[10] || "").trim();
     if (!sales.has(locality)) sales.set(locality, []);
     sales.get(locality).push({
       t: mi,
+      postcode,
       date: `${contract.slice(0, 4)}-${contract.slice(4, 6)}-${contract.slice(6, 8)}`,
       price,
       address: addr
@@ -136,12 +138,21 @@ for (const feat of geo.features) {
     address: r.address,
     type: r.unit ? "Unit" : "House",
   }));
+  // postcodes the suburb's sales sit in (for matching postcode-level rent data)
+  const pcCount = new Map();
+  for (const r of rows) if (r.postcode) pcCount.set(r.postcode, (pcCount.get(r.postcode) || 0) + 1);
+  const postcodes = [...pcCount.entries()]
+    .filter(([, c]) => c >= 5)
+    .sort((a, b) => b[1] - a[1])
+    .map(([code]) => code);
+
   suburbs[name] = {
     medianValue: L >= 0 ? rolling[L] : null,
     medianAsOf: L >= 0 ? monthKeys[L] : null,
     monthlyChangePct,
     change12mPct,
     trendClass,
+    postcodes,
     salesInWindow: L >= 0 ? winPrices[L].length : 0,
     history,
     sales: recent,

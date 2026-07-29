@@ -45,6 +45,13 @@ const AMENITY_BUCKETS = [
   { max: 8, color: "#2a78d6", label: "6–8" },
   { max: Infinity, color: "#1c5cab", label: "8–10 — best served" },
 ];
+const YIELD_BUCKETS = [
+  { max: 2.5, color: "#fde3d3", label: "under 2.5% — low income" },
+  { max: 3, color: "#fac4a5", label: "2.5–3%" },
+  { max: 3.5, color: "#f59d6b", label: "3–3.5%" },
+  { max: 4.5, color: "#eb6834", label: "3.5–4.5%" },
+  { max: Infinity, color: "#b94a1c", label: "4.5%+ — strongest income" },
+];
 const RATING_BUCKETS = [
   { max: 20, color: "#e7f0e7", label: "0–20 — weak" },
   { max: 40, color: "#c4e0c6", label: "20–40" },
@@ -70,12 +77,23 @@ const fmtRate = (pct) => {
 };
 const rateSpanCls = (cls) => (cls === "down" ? "rate-down" : cls === "up" ? "rate-up" : "rate-flat");
 
-// Combined 0-100 rating: 60% price momentum (falling = good), 40% amenities.
-// -2.0%/mo or better -> full trend marks; +0.5%/mo or worse -> zero.
-function combinedScore(stats, am) {
-  if (!stats || stats.monthlyChangePct == null || !am) return null;
-  const trendScore = Math.max(0, Math.min(1, (-stats.monthlyChangePct + 0.5) / 2.5));
-  return Math.round(100 * (0.6 * trendScore + 0.4 * (am.scores.total / 10)));
+// Combined 0-100 rating from three real signals, weighted:
+//   price momentum 40% — -2.0%/mo or better scores full marks, +0.5%/mo zero
+//   rental yield   30% — 2.0% gross scores zero, 5.5%+ scores full marks
+//   amenities      30% — the OSM access score
+// A missing component drops out and the remaining weights are renormalised, so
+// (for example) an area without rent data still gets a rating from the rest.
+// Price momentum is required — without it there is no rating.
+const RATING_WEIGHTS = { trend: 0.4, yield: 0.3, amenities: 0.3 };
+function combinedScore(stats, am, rent) {
+  if (!stats || stats.monthlyChangePct == null) return null;
+  const parts = [[RATING_WEIGHTS.trend, Math.max(0, Math.min(1, (-stats.monthlyChangePct + 0.5) / 2.5))]];
+  if (rent && rent.grossYieldPct != null) {
+    parts.push([RATING_WEIGHTS.yield, Math.max(0, Math.min(1, (rent.grossYieldPct - 2) / 3.5))]);
+  }
+  if (am) parts.push([RATING_WEIGHTS.amenities, am.scores.total / 10]);
+  const weight = parts.reduce((sum, [w]) => sum + w, 0);
+  return Math.round((100 * parts.reduce((sum, [w, v]) => sum + w * v, 0)) / weight);
 }
 
 // --- map ------------------------------------------------------------------
@@ -102,11 +120,13 @@ darkQuery.addEventListener("change", setTiles);
 
 // --- state ----------------------------------------------------------------
 let currentCity = "sydney";
-let currentMode = "trend"; // trend | amenities | combined
+let currentMode = "trend"; // trend | yield | amenities | combined
 let market = {};
 let marketMeta = {};
 let amenities = {};
 let amenityMeta = {};
+let rents = {};
+let rentMeta = {};
 let currentGeo = null;
 let geoLayer = null;
 let labelLayer = L.layerGroup();
@@ -116,18 +136,22 @@ const panelContent = document.getElementById("panel-content");
 
 // mode value for a suburb: { v, text } or null
 function modeValue(name) {
-  const entry = suburbIndex.get(name) || { stats: market[name], am: amenities[name] };
-  const { stats, am } = entry;
+  const entry = suburbIndex.get(name) || { stats: market[name], am: amenities[name], rent: rents[name] };
+  const { stats, am, rent } = entry;
   if (currentMode === "trend") {
     if (!stats || stats.monthlyChangePct == null) return null;
     const r = fmtRate(stats.monthlyChangePct);
     return { v: stats.monthlyChangePct, text: r.text, cls: r.cls, buckets: TREND_BUCKETS, asc: true };
   }
+  if (currentMode === "yield") {
+    if (!rent || rent.grossYieldPct == null) return null;
+    return { v: rent.grossYieldPct, text: `◈ ${rent.grossYieldPct.toFixed(1)}%`, cls: "flat", buckets: YIELD_BUCKETS, asc: false };
+  }
   if (currentMode === "amenities") {
     if (!am) return null;
     return { v: am.scores.total, text: `◇ ${am.scores.total.toFixed(1)}`, cls: "flat", buckets: AMENITY_BUCKETS, asc: false };
   }
-  const score = combinedScore(stats, am);
+  const score = combinedScore(stats, am, rent);
   if (score == null) return null;
   return { v: score, text: `★ ${score}`, cls: "flat", buckets: RATING_BUCKETS, asc: false };
 }
@@ -145,13 +169,15 @@ function styleFor(feature) {
 
 const MODE_TITLES = {
   trend: () => `Median price trend (${marketMeta.trendLabel || ""})`,
+  yield: () => "Gross rental yield",
   amenities: () => "Amenity access score (0–10)",
   combined: () => "Opportunity rating (0–100)",
 };
 const MODE_LIST_HEADINGS = {
   trend: "Top opportunities — fastest-falling medians",
+  yield: "Highest gross rental yields",
   amenities: "Best-served areas — amenity score",
-  combined: "Top opportunity ratings — price momentum + amenities",
+  combined: "Top opportunity ratings — momentum + yield + amenities",
 };
 
 async function loadCity(city) {
@@ -168,15 +194,20 @@ async function loadCity(city) {
   labelLayer.clearLayers();
   suburbIndex.clear();
 
-  const [geo, mkt, amen] = await Promise.all([
+  const optional = (url) =>
+    fetch(url).then((r) => (r.ok ? r.json() : { suburbs: {} })).catch(() => ({ suburbs: {} }));
+  const [geo, mkt, amen, rnt] = await Promise.all([
     fetch(`${cfg.dir}/suburbs.geojson`).then((r) => r.json()),
     fetch(`${cfg.dir}/market.json`).then((r) => r.json()),
-    fetch(`${cfg.dir}/amenities.json`).then((r) => (r.ok ? r.json() : { suburbs: {} })).catch(() => ({ suburbs: {} })),
+    optional(`${cfg.dir}/amenities.json`),
+    optional(`${cfg.dir}/rents.json`),
   ]);
   market = mkt.suburbs;
   marketMeta = mkt;
   amenities = amen.suburbs || {};
   amenityMeta = amen;
+  rents = rnt.suburbs || {};
+  rentMeta = rnt;
   currentGeo = geo;
 
   document.getElementById("subtitle").innerHTML =
@@ -188,7 +219,7 @@ async function loadCity(city) {
     style: styleFor,
     onEachFeature: (feature, layer) => {
       const name = feature.properties.name;
-      suburbIndex.set(name, { layer, centroid: feature.properties.centroid, stats: market[name], am: amenities[name] });
+      suburbIndex.set(name, { layer, centroid: feature.properties.centroid, stats: market[name], am: amenities[name], rent: rents[name] });
       layer.on({
         mouseover: (e) => {
           e.target.setStyle({ weight: 2.5, fillOpacity: 0.72 });
@@ -270,7 +301,9 @@ document.head.appendChild(nameCss);
 let legendControl = null;
 function buildLegend() {
   if (legendControl) map.removeControl(legendControl);
-  const buckets = currentMode === "trend" ? TREND_BUCKETS : currentMode === "amenities" ? AMENITY_BUCKETS : RATING_BUCKETS;
+  const buckets = currentMode === "trend" ? TREND_BUCKETS
+    : currentMode === "yield" ? YIELD_BUCKETS
+    : currentMode === "amenities" ? AMENITY_BUCKETS : RATING_BUCKETS;
   legendControl = L.control({ position: "bottomleft" });
   legendControl.onAdd = () => {
     const div = L.DomUtil.create("div", "legend");
@@ -283,9 +316,11 @@ function buildLegend() {
       `<div class="legend-row"><span class="legend-swatch" style="background:${NO_DATA_COLOR};opacity:.4;border-style:dashed"></span>Insufficient data</div>` +
       (currentMode === "trend"
         ? '<div class="legend-note">Green areas are cooling — potential buying opportunities. Red areas are flat or still climbing.</div>'
-        : currentMode === "amenities"
-          ? '<div class="legend-note">Transit, schools and shopping access scored from OpenStreetMap locations.</div>'
-          : '<div class="legend-note">60% price momentum (falling = better) + 40% amenity access.</div>');
+        : currentMode === "yield"
+          ? `<div class="legend-note">Annual rent as a % of median price, from real bond lodgements${currentCity === "sydney" ? " (postcode level)" : ""}.</div>`
+          : currentMode === "amenities"
+            ? '<div class="legend-note">Transit, schools and shopping access scored from OpenStreetMap locations.</div>'
+            : '<div class="legend-note">40% price momentum (falling = better) + 30% rental yield + 30% amenity access.</div>');
     return div;
   };
   legendControl.addTo(map);
@@ -303,13 +338,15 @@ function buildRankList() {
     <h2 class="panel-heading">${MODE_LIST_HEADINGS[currentMode]}</h2>
     <p class="panel-hint">${cfg.label} · click an entry — or any area on the map — for detail.</p>
     <ol class="opportunity-list" id="opportunity-list"></ol>
-    <p class="panel-hint" style="margin-top:12px">${marketMeta.source}${amenityMeta.source ? " · Amenities: " + amenityMeta.source : ""}</p>`;
+    <p class="panel-hint" style="margin-top:12px">Prices: ${marketMeta.source}${rentMeta.source ? " · Rents: " + rentMeta.source : ""}${amenityMeta.source ? " · Amenities: " + amenityMeta.source : ""}</p>`;
   const list = document.getElementById("opportunity-list");
   for (const { name, mv, stats } of ranked) {
     const li = document.createElement("li");
     const btn = document.createElement("button");
-    const n = currentMode === "trend" && stats ? stats.salesInWindow : null;
-    btn.innerHTML = `<span>${name}${n ? ` <span style="color:var(--muted);font-size:11px">· ${n} sales</span>` : ""}</span><span class="${rateSpanCls(mv.cls)}">${mv.text}</span>`;
+    const n = currentMode === "trend" && stats ? stats.salesInWindow
+      : currentMode === "yield" && suburbIndex.get(name).rent ? suburbIndex.get(name).rent.rentSample : null;
+    const nLabel = currentMode === "yield" ? "bonds" : "sales";
+    btn.innerHTML = `<span>${name}${n ? ` <span style="color:var(--muted);font-size:11px">· ${n} ${nLabel}</span>` : ""}</span><span class="${rateSpanCls(mv.cls)}">${mv.text}</span>`;
     btn.addEventListener("click", () => flyToSuburb(name));
     li.appendChild(btn);
     list.appendChild(li);
@@ -328,9 +365,15 @@ function restoreDefaultPanel() {
 function flyToSuburb(name) {
   const entry = suburbIndex.get(name);
   if (!entry) return;
-  const [lng, lat] = entry.centroid;
-  map.flyTo([lat, lng], Math.max(map.getZoom(), 13), { duration: 0.8 });
+  // Open the panel first: a map animation hiccup must never swallow the detail.
   showDetail(name);
+  const [lng, lat] = entry.centroid;
+  const zoom = Math.max(map.getZoom(), 13);
+  try {
+    map.flyTo([lat, lng], zoom, { duration: 0.8 });
+  } catch {
+    map.setView([lat, lng], zoom, { animate: false });
+  }
 }
 
 function sparklineSvg(history) {
@@ -350,6 +393,25 @@ function sparklineSvg(history) {
     <path d="${path}" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
     <circle cx="${ex}" cy="${ey}" r="3.5" fill="var(--accent)"/>
   </svg>`;
+}
+
+function rentSectionHtml(rent) {
+  if (!rent || rent.medianWeeklyRent == null) {
+    return '<div class="section-label">Rent &amp; yield</div><p class="panel-hint">Not enough bond lodgements to publish a rent median here.</p>';
+  }
+  const beds = Object.entries(rent.byBedrooms || {});
+  const bedRows = beds
+    .map(([k, v]) => `<tr><td>${/^\d+$/.test(k) ? `${k} bed` : k}</td><td class="price">${v.count}</td><td class="price">$${v.median}/wk</td></tr>`)
+    .join("");
+  return `
+    <div class="section-label">Rent &amp; yield — ${rent.rentClass}</div>
+    <div class="stat-row">
+      <div class="stat-tile"><div class="stat-label">Median rent</div><div class="stat-value">$${rent.medianWeeklyRent}<span style="font-size:12px;color:var(--muted)">/wk</span></div></div>
+      <div class="stat-tile"><div class="stat-label">Gross yield</div><div class="stat-value">${rent.grossYieldPct != null ? rent.grossYieldPct + "%" : "—"}</div></div>
+      <div class="stat-tile"><div class="stat-label">Bonds sampled</div><div class="stat-value">${rent.rentSample}</div></div>
+    </div>
+    <p class="panel-hint" style="margin:0 0 8px">Rent measured at ${rent.rentScope || "area"} level${rent.priceUsed ? `; yield against the ${rent.rentClass} median of ${fmtMoney(rent.priceUsed)}` : ""}.</p>
+    ${bedRows ? `<table class="sales-table"><thead><tr><th>Bedrooms</th><th class="price">Bonds</th><th class="price">Median rent</th></tr></thead><tbody>${bedRows}</tbody></table>` : ""}`;
 }
 
 function amenitySectionHtml(am) {
@@ -425,8 +487,9 @@ function showDetail(name) {
   if (!entry || !entry.stats) return;
   const s = entry.stats;
   const am = entry.am;
+  const rent = entry.rent;
   const rate = fmtRate(s.monthlyChangePct);
-  const rating = combinedScore(s, am);
+  const rating = combinedScore(s, am, rent);
   const longChange = s.change12mPct ?? s.change18mPct;
   const longLabel = s.change12mPct != null ? "12 months" : "Since FY2024";
   panelContent.innerHTML = `
@@ -437,6 +500,7 @@ function showDetail(name) {
       <div class="stat-tile"><div class="stat-label">${marketMeta.trendLabel || "Trend"}${s.trendClass ? ` (${s.trendClass})` : ""}</div><div class="stat-value ${rateSpanCls(rate.cls)}">${rate.text}</div></div>
       <div class="stat-tile"><div class="stat-label">${longLabel}</div><div class="stat-value ${longChange == null ? "rate-flat" : longChange <= -0.5 ? "rate-down" : longChange >= 0.5 ? "rate-up" : "rate-flat"}">${longChange == null ? "—" : (longChange > 0 ? "+" : "") + longChange + "%"}</div></div>
     </div>
+    ${rentSectionHtml(rent)}
     ${amenitySectionHtml(am)}
     <div class="section-label">Median history${s.trendClass ? ` — ${s.trendClass}` : ""}</div>
     <div class="sparkline-wrap">${sparklineSvg(s.history)}
@@ -466,6 +530,7 @@ function buildSearch() {
 document.getElementById("city-sydney").addEventListener("click", () => loadCity("sydney"));
 document.getElementById("city-brisbane").addEventListener("click", () => loadCity("brisbane"));
 document.getElementById("mode-trend").addEventListener("click", () => setMode("trend"));
+document.getElementById("mode-yield").addEventListener("click", () => setMode("yield"));
 document.getElementById("mode-amenities").addEventListener("click", () => setMode("amenities"));
 document.getElementById("mode-combined").addEventListener("click", () => setMode("combined"));
 loadCity("sydney");

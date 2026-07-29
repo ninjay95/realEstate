@@ -15,12 +15,16 @@ the median value, trend, a price-history sparkline, sales detail and an
 amenity breakdown. A search box and a Sydney/Brisbane switcher sit in the
 header, plus a view switcher:
 
-- **Price trend** — the green/red choropleth above.
+- **Trend** — the green/red choropleth above.
+- **Yield** — orange choropleth of gross rental yield (annual rent as a % of
+  the median price), from real rental-bond lodgements.
 - **Amenities** — blue choropleth of a 0–10 amenity access score built from
   real OpenStreetMap locations: transit stations (rail/metro/busway/ferry),
   schools, shopping centres and supermarkets.
-- **Rating** — 0–100 combined opportunity rating: 60% price momentum
-  (falling medians score higher) + 40% amenity access.
+- **Rating** — 0–100 combined opportunity rating: **40% price momentum**
+  (falling medians score higher) + **30% rental yield** + **30% amenity
+  access**. If a component is missing for an area the remaining weights are
+  renormalised; price momentum is required.
 
 ## Run it
 
@@ -80,6 +84,31 @@ npm run fetch:brisbane   # ABS API + ~250 QGSO profile requests (~10 min, thrott
 npm run build:brisbane
 ```
 
+### Rents & yields
+
+- **Sydney** — [NSW Fair Trading rental bond lodgements](https://www.nsw.gov.au/housing-and-construction/rental-forms-surveys-and-data/rental-bond-data):
+  every bond lodged with Fair Trading, one XLSX per month, with postcode,
+  dwelling type, bedrooms and weekly rent. ~227,000 usable lodgements over the
+  last 10 published months. **Rents are only published at postcode level**, so
+  a suburb inherits the median of the postcode(s) its sales sit in — suburbs
+  sharing a postcode share a rent median (the panel labels the scope).
+- **Brisbane** — median rents per SA2 from the same
+  [QGSO Housing Profiles](https://statistics.qgso.qld.gov.au/hpw/profiles)
+  service (`MEDIANRENT` topic), derived by Queensland Treasury from
+  **Residential Tenancies Authority** bond lodgements. Published as 1/2-bedroom
+  flat-unit and 3/4-bedroom house medians; we combine the categories for the
+  area's dominant class weighted by lodgement count.
+- **Yield** = median weekly rent × 52 ÷ median sale price, matched to the same
+  dwelling class (houses vs units) on both sides. Minimum 10 lodgements.
+
+Rebuild:
+
+```bash
+npm run fetch:rents-sydney     # ~7 MB of monthly XLSX files
+npm run fetch:rents-brisbane   # ~250 QGSO requests (~7 min, throttled)
+npm run build:rents
+```
+
 ### Amenities (both cities)
 
 Locations come from **OpenStreetMap** (© OpenStreetMap contributors, ODbL)
@@ -111,7 +140,35 @@ npm run build:amenities
 - The two cities' trend windows differ (6 months for Sydney, 18 months for
   Brisbane) because that's what each state's open data supports. The legend
   and panels label the window in use.
+- Yields are **gross**, not net: they ignore strata/body-corporate fees,
+  council rates, insurance, management fees and vacancy. Net yields are
+  typically 1–1.5 percentage points lower, and more for high-strata units.
+- Sydney rents are postcode-level while prices are suburb-level, so a
+  small-suburb yield can be skewed by neighbours sharing its postcode. Rent
+  and price periods also differ slightly (rents to mid-2026, Brisbane prices
+  to Dec 2025).
 - Nothing here is financial advice — it's a map of public records.
+
+## Where the data comes from and where it lives
+
+Every number on the map traces to one of these. Nothing is estimated or
+synthesised.
+
+| Signal | Source (all free/open) | Fetched into (gitignored) | Served from (committed) |
+|---|---|---|---|
+| Sydney boundaries | PSMA NSW localities via GeoJson-Data | `scripts/nsw-suburbs-raw.geojson` | `site/data/sydney/suburbs.geojson` |
+| Sydney prices & sales | NSW Valuer General bulk PSI (weekly `.DAT`) | `scripts/raw-nsw/` | `site/data/sydney/market.json` |
+| Sydney rents | NSW Fair Trading bond lodgements (monthly `.xlsx`) | `scripts/raw-nsw/rents/` | `site/data/sydney/rents.json` |
+| Brisbane boundaries | ABS ASGS 2021 SA2 (ArcGIS API) | — (written directly) | `site/data/brisbane/suburbs.geojson` |
+| Brisbane prices | QGSO Housing Profiles (QVAS) + ABS Data by region | `scripts/raw-brisbane/` | `site/data/brisbane/market.json` |
+| Brisbane rents | RTA bond lodgements via QGSO Housing Profiles | `scripts/raw-brisbane/qgso-rents.json` | `site/data/brisbane/rents.json` |
+| Amenities (both) | OpenStreetMap via Overpass API | `scripts/raw-amenities/` | `site/data/<city>/amenities.json` |
+
+The site is **static** — it only ever reads the committed JSON/GeoJSON in
+`site/data/`, so it works offline and on GitHub Pages with no backend and no
+API keys. Raw downloads (~50 MB) stay local and gitignored; only the compact
+built files are committed. Nothing is stored anywhere else: no database, no
+server, no third-party service, and no personal data of any kind.
 
 ## Project layout
 
@@ -122,6 +179,12 @@ scripts/build-market-sydney.js  parse sales -> site/data/sydney/market.json
 scripts/fetch-brisbane-data.js  ABS boundaries+medians, QGSO profiles -> scripts/raw-brisbane/
 scripts/build-market-brisbane.js -> site/data/brisbane/market.json
 scripts/build-suburbs.js      rebuild Sydney boundary file
+scripts/fetch-nsw-rents.sh    download NSW bond lodgement xlsx -> scripts/raw-nsw/rents/
+scripts/fetch-rents-brisbane.js QGSO median rents -> scripts/raw-brisbane/qgso-rents.json
+scripts/build-rents.js        rents + gross yields -> site/data/<city>/rents.json
+scripts/fetch-amenities.js    OSM/Overpass points -> scripts/raw-amenities/
+scripts/build-amenities.js    amenity scores -> site/data/<city>/amenities.json
+scripts/lib/xlsx-lite.js      dependency-free xlsx reader (for the bond files)
 scripts/qgso-sa2-ids.json     QGSO region ids for SA2 profile requests
 site/                         the website (Leaflet, no build step)
 site/data/<city>/             committed data the site loads

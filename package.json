@@ -11,6 +11,9 @@
     "build:brisbane": "node scripts/build-market-brisbane.js",
     "fetch:amenities": "node scripts/fetch-amenities.js",
     "build:amenities": "node scripts/build-amenities.js",
+    "fetch:rents-sydney": "bash scripts/fetch-nsw-rents.sh",
+    "fetch:rents-brisbane": "node scripts/fetch-rents-brisbane.js",
+    "build:rents": "node scripts/build-rents.js",
     "build:sydney-boundaries": "node scripts/build-suburbs.js"
   }
 }

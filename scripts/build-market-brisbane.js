@@ -48,13 +48,21 @@ for (const feat of geo.features) {
   const houseCounts = a.HOUSES_2 || {};
   const unitCounts = a.HOUSES_4 || {};
 
-  // pick the dwelling class with usable data on both sides
+  // Use the area's DOMINANT dwelling class (most sales), not detached by
+  // default — apartment SA2s like Newstead sell 900+ units to ~25 houses, and
+  // a trend off the 25 houses describes a different market than the one there.
   let cls = null, qgsoMedian = null, absMedian = null;
   if (q && q.ok) {
-    if (q.detachedMedian && (q.detachedCount ?? 0) >= MIN_COUNT && houses["2024"]) {
-      cls = "detached"; qgsoMedian = q.detachedMedian; absMedian = houses["2024"];
-    } else if (q.attachedMedian && (q.attachedCount ?? 0) >= MIN_COUNT && units["2024"]) {
-      cls = "attached"; qgsoMedian = q.attachedMedian; absMedian = units["2024"];
+    const candidates = [
+      { cls: "detached", count: q.detachedCount ?? 0, median: q.detachedMedian, abs: houses["2024"] },
+      { cls: "attached", count: q.attachedCount ?? 0, median: q.attachedMedian, abs: units["2024"] },
+    ]
+      .filter((c) => c.median && c.abs && c.count >= MIN_COUNT)
+      .sort((a, b) => b.count - a.count);
+    if (candidates.length) {
+      cls = candidates[0].cls;
+      qgsoMedian = candidates[0].median;
+      absMedian = candidates[0].abs;
     }
   }
 
@@ -99,7 +107,7 @@ for (const feat of geo.features) {
 const out = {
   generatedAt: new Date().toISOString().slice(0, 10),
   source: "QGSO Queensland Housing Profiles (QVAS database, CC BY 4.0) + ABS Data by region (annual SA2 medians)",
-  method: "QVAS 12-month median (to Dec 2025) compared like-for-like against the ABS FY2024 median for the same dwelling class; change annualised over the 18 months between period midpoints, expressed as %/month.",
+  method: "QVAS 12-month median (to Dec 2025) compared like-for-like against the ABS FY2024 median for the same dwelling class (the area's dominant class by sales count); change annualised over the 18 months between period midpoints, expressed as %/month.",
   trendLabel: "18-month trend",
   suburbs,
 };
