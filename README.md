@@ -10,9 +10,17 @@ colours them by their **real** recent median-price trend:
   reliable median are shown dashed and pale.
 - **Red** — still **expensive**: flat-to-rising or climbing.
 
-Clicking an area (or an entry in the "Top opportunities" panel) opens a
-detail view with the median value, trend, a price-history sparkline and
-sales detail. A search box and a Sydney/Brisbane switcher sit in the header.
+Clicking an area (or an entry in the ranked panel) opens a detail view with
+the median value, trend, a price-history sparkline, sales detail and an
+amenity breakdown. A search box and a Sydney/Brisbane switcher sit in the
+header, plus a view switcher:
+
+- **Price trend** — the green/red choropleth above.
+- **Amenities** — blue choropleth of a 0–10 amenity access score built from
+  real OpenStreetMap locations: transit stations (rail/metro/busway/ferry),
+  schools, shopping centres and supermarkets.
+- **Rating** — 0–100 combined opportunity rating: 60% price momentum
+  (falling medians score higher) + 40% amenity access.
 
 ## Run it
 
@@ -70,6 +78,28 @@ Rebuild:
 ```bash
 npm run fetch:brisbane   # ABS API + ~250 QGSO profile requests (~10 min, throttled)
 npm run build:brisbane
+```
+
+### Amenities (both cities)
+
+Locations come from **OpenStreetMap** (© OpenStreetMap contributors, ODbL)
+via the Overpass API: `railway=station` / `public_transport=station` /
+`amenity=bus_station` / `amenity=ferry_terminal`, `amenity=school`,
+`shop=mall` and `shop=supermarket`. Each suburb gets 0–10 scores:
+
+- **Transit**: stations inside the boundary (2+ → 10, 1 → 8.5), else graded
+  by distance from the suburb centroid to the nearest station.
+- **Schools**: count inside the boundary (3+ → 10), else nearest distance.
+- **Shopping**: 70% shopping-centre proximity + 30% supermarket count.
+
+The scores are documented heuristics over real locations; the underlying
+facts (nearest station name/distance, counts) are shown in the detail panel.
+
+Rebuild:
+
+```bash
+npm run fetch:amenities   # Overpass API, throttled per category
+npm run build:amenities
 ```
 
 ## Honest-data notes

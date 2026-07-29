@@ -2,3 +2,4 @@ node_modules/
 scripts/nsw-suburbs-raw.geojson
 scripts/raw-nsw/
 scripts/raw-brisbane/
+scripts/raw-amenities/

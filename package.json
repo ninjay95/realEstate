@@ -9,6 +9,8 @@
     "build:sydney": "node scripts/build-market-sydney.js",
     "fetch:brisbane": "node scripts/fetch-brisbane-data.js",
     "build:brisbane": "node scripts/build-market-brisbane.js",
+    "fetch:amenities": "node scripts/fetch-amenities.js",
+    "build:amenities": "node scripts/build-amenities.js",
     "build:sydney-boundaries": "node scripts/build-suburbs.js"
   }
 }
