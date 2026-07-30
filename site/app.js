@@ -245,7 +245,7 @@ function applyTheme() {
 /* --- map ----------------------------------------------------------------- */
 
 const map = L.map("map", { zoomControl: true, attributionControl: true })
-  .setView(CITIES.sydney.center, CITIES.sydney.zoom);
+  .setView(CITIES.brisbane.center, CITIES.brisbane.zoom);
 window.__map = map; // console/debug handle
 
 let tileLayer = null;
@@ -266,7 +266,7 @@ darkQuery.addEventListener("change", () => { if (themePref === "system") applyTh
 
 /* --- state --------------------------------------------------------------- */
 
-let currentCity = "sydney";
+let currentCity = "brisbane";
 let currentMode = "trend";
 let currentClass = localStorage.getItem("propertyClass") === "units" ? "units" : "houses";
 let market = {}, marketMeta = {};
@@ -312,15 +312,59 @@ const colorFor = (name) => {
   return mv ? bucketColor(bucketsFor(currentMode), mv.v) : NO_DATA_COLOR;
 };
 
+// The selected suburb keeps a heavy ink outline — a neutral that sits outside
+// every data palette, so it reads as "this one" without impersonating a value.
+const selectStroke = () => (isDark() ? "#ffffff" : "#0f1317");
+
 function styleFor(feature) {
-  const mv = modeValue(feature.properties.name);
+  const name = feature.properties.name;
+  const mv = modeValue(name);
+  const selected = name === openSuburb;
   return {
     fillColor: mv ? bucketColor(bucketsFor(currentMode), mv.v) : NO_DATA_COLOR,
-    fillOpacity: mv ? 0.58 : 0.16,
-    color: isDark() ? "rgba(238,241,244,0.32)" : "rgba(15,19,23,0.28)",
-    weight: 1,
+    fillOpacity: selected ? (mv ? 0.8 : 0.3) : (mv ? 0.58 : 0.16),
+    color: selected ? selectStroke() : isDark() ? "rgba(238,241,244,0.32)" : "rgba(15,19,23,0.28)",
+    weight: selected ? 3.5 : 1,
     dashArray: mv ? null : "3 3",
   };
+}
+
+// Restyle just the two polygons that can change, rather than the whole layer.
+function setSelected(name) {
+  const previous = openSuburb;
+  openSuburb = name;
+  for (const key of [previous, name]) {
+    const entry = key && suburbIndex.get(key);
+    if (entry && geoLayer) geoLayer.resetStyle(entry.layer);
+  }
+  const entry = name && suburbIndex.get(name);
+  if (entry) entry.layer.bringToFront();
+  buildLabels();
+  buildSelectionLabel();
+  syncLabelVisibility();
+}
+
+// The selected suburb's label lives on its own layer that is never hidden, so
+// the area you just clicked stays identifiable at any zoom.
+const selectionLayer = L.layerGroup();
+function buildSelectionLabel() {
+  selectionLayer.clearLayers();
+  if (!openSuburb || !currentGeo) { map.removeLayer(selectionLayer); return; }
+  const feature = currentGeo.features.find((f) => f.properties.name === openSuburb);
+  if (!feature) return;
+  const mv = modeValue(openSuburb);
+  // Never substitute a different measure here — a price shown under the yield
+  // view would read as a yield.
+  const value = mv ? mv.text : "no data";
+  const icon = L.divIcon({
+    className: "rate-pill is-selected",
+    html: `<span class="pill"><span class="pill-name">${esc(openSuburb)} </span><span class="pill-value ${mv ? mv.cls : "is-flat"}">${value}</span></span>`,
+    iconSize: [0, 0],
+  });
+  const [lng, lat] = feature.properties.centroid;
+  selectionLayer.addLayer(L.marker([lat, lng], { icon, interactive: false, keyboard: false }));
+  selectionLayer.addTo(map);
+  selectionLayer.eachLayer((l) => l.setZIndexOffset(1000));
 }
 
 const MODE_TITLES = {
@@ -357,8 +401,10 @@ async function loadCity(city) {
 
   if (geoLayer) { map.removeLayer(geoLayer); geoLayer = null; }
   labelLayer.clearLayers();
+  selectionLayer.clearLayers();
+  map.removeLayer(selectionLayer);
   suburbIndex.clear();
-  openSuburb = null;
+  openSuburb = null; // direct: the layers it styles are being rebuilt below
 
   const optional = (url) =>
     fetch(url).then((r) => (r.ok ? r.json() : { suburbs: {} })).catch(() => ({ suburbs: {} }));
@@ -382,7 +428,11 @@ async function loadCity(city) {
       const name = feature.properties.name;
       suburbIndex.set(name, { layer, centroid: feature.properties.centroid });
       layer.on({
-        mouseover: (e) => { e.target.setStyle({ weight: 2.5, fillOpacity: 0.75 }); e.target.bringToFront(); },
+        mouseover: (e) => {
+          const selected = name === openSuburb;
+          e.target.setStyle({ weight: selected ? 4 : 2.5, fillOpacity: selected ? 0.85 : 0.75 });
+          e.target.bringToFront();
+        },
         mouseout: (e) => geoLayer.resetStyle(e.target),
         click: () => flyToSuburb(name),
       });
@@ -400,7 +450,10 @@ function setMode(mode) {
     b.classList.toggle("is-active", active);
     b.setAttribute("aria-selected", String(active));
   });
+  const reopen = openSuburb;
   refreshMode();
+  // Changing what the map measures shouldn't close the suburb being read.
+  if (reopen && statsOf(reopen)) showDetail(reopen);
 }
 
 function setClass(cls, keepOpen = true) {
@@ -416,6 +469,7 @@ function setClass(cls, keepOpen = true) {
   // Staying on the same suburb while flipping type is the whole point of the
   // control — rebuild the detail rather than dumping the viewer back to a list.
   if (reopen && statsOf(reopen)) showDetail(reopen);
+  else if (reopen) setSelected(null); // no data for this type — drop the highlight too
 }
 
 function refreshMode() {
@@ -433,6 +487,7 @@ function refreshMode() {
     );
   });
   buildLabels();
+  buildSelectionLabel();
   buildLegend();
   buildRankPanel();
   buildSearch();
@@ -448,6 +503,7 @@ function buildLabels() {
     const name = f.properties.name;
     const mv = modeValue(name);
     if (!mv) continue;
+    if (name === openSuburb) continue; // drawn by the always-on selection layer
     const icon = L.divIcon({
       className: "rate-pill",
       html: `<span class="pill"><span class="pill-name">${esc(name)} </span><span class="pill-value ${mv.cls}">${mv.text}</span></span>`,
@@ -469,7 +525,9 @@ function syncLabelVisibility() {
 map.on("zoomend", syncLabelVisibility);
 
 const nameCss = document.createElement("style");
-nameCss.textContent = "#map:not(.show-names) .pill-name{display:none}";
+nameCss.textContent =
+  "#map:not(.show-names) .pill-name{display:none}" +
+  "#map:not(.show-names) .rate-pill.is-selected .pill-name{display:inline}";
 document.head.appendChild(nameCss);
 
 /* --- legend -------------------------------------------------------------- */
@@ -578,7 +636,7 @@ function bindRankRows() {
 }
 
 function restoreDefaultPanel() {
-  openSuburb = null;
+  setSelected(null);
   panelContent.innerHTML = defaultPanelHtml;
   bindRankRows();
 }
@@ -708,7 +766,7 @@ function crossClassHtml(name) {
 function showDetail(name) {
   const stats = statsOf(name);
   if (!stats) return;
-  openSuburb = name;
+  setSelected(name);
   const am = amOf(name);
   const rent = rentOf(name);
   const rate = fmtRate(stats.monthlyChangePct);
@@ -798,4 +856,4 @@ document.querySelectorAll("[id^=class-]").forEach((b) => {
   b.classList.toggle("is-active", active);
   b.setAttribute("aria-selected", String(active));
 });
-loadCity("sydney");
+loadCity("brisbane");

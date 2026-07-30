@@ -566,6 +566,21 @@ body {
 .rate-pill .pill-name { font-weight: 500; color: var(--ink-2); }
 .rate-pill .pill-value { font-family: var(--font-num); font-variant-numeric: tabular-nums; }
 
+/* the suburb currently open in the inspector */
+.rate-pill.is-selected span.pill {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: var(--surface);
+  font-weight: 650;
+  padding: 2px 8px;
+  box-shadow: var(--shadow-md);
+}
+.rate-pill.is-selected .pill-name { color: var(--surface); font-weight: 650; }
+.rate-pill.is-selected .pill-value,
+.rate-pill.is-selected .is-down,
+.rate-pill.is-selected .is-up,
+.rate-pill.is-selected .is-flat { color: var(--surface); }
+
 .legend {
   background: color-mix(in srgb, var(--surface) 94%, transparent);
   backdrop-filter: blur(6px);
