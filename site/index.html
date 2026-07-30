@@ -3,47 +3,73 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="color-scheme" content="light dark" />
   <title>Suburb Opportunity Map — Sydney &amp; Brisbane</title>
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
-    integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+  <meta name="description" content="Sydney and Brisbane suburbs mapped on price trend, rental yield and amenity access, built entirely from public property records." />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='2' fill='%231c5cab'/%3E%3Crect x='2.5' y='2.5' width='4' height='4' fill='%23cde2fb'/%3E%3Crect x='9.5' y='2.5' width='4' height='4' fill='%235598e7'/%3E%3Crect x='2.5' y='9.5' width='4' height='4' fill='%235598e7'/%3E%3Crect x='9.5' y='9.5' width='4' height='4' fill='%23b7dfb9'/%3E%3C/svg%3E" />
+  <link rel="stylesheet" href="vendor/leaflet/leaflet.css" />
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
   <header class="topbar">
-    <div class="title-block">
-      <h1>Suburb Opportunity Map</h1>
-      <p class="subtitle" id="subtitle">Loading…</p>
+    <div class="brand">
+      <svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+        <rect x="1" y="1" width="9.5" height="9.5" rx="1" class="mk-1" />
+        <rect x="13.5" y="1" width="9.5" height="9.5" rx="1" class="mk-2" />
+        <rect x="1" y="13.5" width="9.5" height="9.5" rx="1" class="mk-3" />
+        <rect x="13.5" y="13.5" width="9.5" height="9.5" rx="1" class="mk-4" />
+      </svg>
+      <span class="brand-text">
+        <span class="brand-name">Suburb Opportunity Map</span>
+        <span class="brand-sub" id="subtitle">Loading…</span>
+      </span>
     </div>
-    <div class="city-switch" role="tablist" aria-label="City">
-      <button id="city-sydney" class="city-btn active" role="tab" aria-selected="true">Sydney</button>
-      <button id="city-brisbane" class="city-btn" role="tab" aria-selected="false">Brisbane</button>
-    </div>
-    <div class="city-switch" role="tablist" aria-label="Map view">
-      <button id="mode-trend" class="city-btn active" role="tab" aria-selected="true">Trend</button>
-      <button id="mode-yield" class="city-btn" role="tab" aria-selected="false">Yield</button>
-      <button id="mode-amenities" class="city-btn" role="tab" aria-selected="false">Amenities</button>
-      <button id="mode-combined" class="city-btn" role="tab" aria-selected="false">Rating</button>
-    </div>
-    <div class="search-block">
-      <input id="search" type="search" list="suburb-list" placeholder="Find a suburb…" autocomplete="off" />
-      <datalist id="suburb-list"></datalist>
+
+    <div class="controls">
+      <div class="ctl-group">
+        <span class="ctl-label" aria-hidden="true">City</span>
+        <div class="segmented" role="tablist" aria-label="City">
+          <button id="city-sydney" class="seg-btn is-active" role="tab" aria-selected="true" type="button">Sydney</button>
+          <button id="city-brisbane" class="seg-btn" role="tab" aria-selected="false" type="button">Brisbane</button>
+        </div>
+      </div>
+
+      <div class="ctl-group">
+        <span class="ctl-label" aria-hidden="true">View</span>
+        <div class="segmented" role="tablist" aria-label="Map view">
+          <button id="mode-trend" class="seg-btn is-active" role="tab" aria-selected="true" type="button">Trend</button>
+          <button id="mode-yield" class="seg-btn" role="tab" aria-selected="false" type="button">Yield</button>
+          <button id="mode-amenities" class="seg-btn" role="tab" aria-selected="false" type="button">Amenities</button>
+          <button id="mode-combined" class="seg-btn" role="tab" aria-selected="false" type="button">Rating</button>
+        </div>
+      </div>
+
+      <div class="search">
+        <svg class="search-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+          <circle cx="6.8" cy="6.8" r="4.6" fill="none" stroke="currentColor" stroke-width="1.6" />
+          <path d="M10.4 10.4 14 14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+        </svg>
+        <input id="search" type="search" list="suburb-list" placeholder="Find a suburb" autocomplete="off" aria-label="Find a suburb" />
+        <datalist id="suburb-list"></datalist>
+      </div>
+
+      <button id="theme-toggle" class="icon-btn" type="button" aria-label="Colour theme: follow system">
+        <span class="theme-dot" aria-hidden="true"></span>
+        <span class="theme-text">Auto</span>
+      </button>
     </div>
   </header>
 
   <main class="layout">
-    <div id="map" role="application" aria-label="Choropleth map of Sydney suburbs coloured by price trend"></div>
-
-    <aside class="panel" id="panel">
+    <div id="map" role="application" aria-label="Map of suburbs shaded by the selected measure"></div>
+    <aside class="inspector" id="panel">
       <div id="panel-content">
-        <h2 class="panel-heading">Top opportunities</h2>
-        <p class="panel-hint">Suburbs with the fastest-falling median values. Click one — or any suburb on the map — for detail.</p>
-        <ol class="opportunity-list" id="opportunity-list"></ol>
+        <p class="loading">Loading map data…</p>
       </div>
     </aside>
   </main>
 
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
-    integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+  <script src="vendor/leaflet/leaflet.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

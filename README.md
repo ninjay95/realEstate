@@ -149,6 +149,35 @@ npm run build:amenities
   to Dec 2025).
 - Nothing here is financial advice — it's a map of public records.
 
+## Technology, and moving off GitHub Pages
+
+The site is **plain HTML, CSS and vanilla JavaScript** with Leaflet vendored
+into `site/vendor/`. There is no framework, no build step, no bundler, no npm
+dependencies at runtime, and no server-side code. That is a deliberate choice
+for portability: the entire website is the `site/` folder, and every asset
+path in it is relative.
+
+Migrating to any other host is a copy:
+
+| Host | How |
+|---|---|
+| Netlify | drag `site/` onto the deploy area, or connect the repo with publish directory `site` and no build command |
+| Vercel | import the repo, framework preset "Other", output directory `site` |
+| Cloudflare Pages | connect the repo, build output directory `site` |
+| S3 + CloudFront | `aws s3 sync site/ s3://your-bucket --delete` |
+| Any VPS (nginx/Apache) | copy `site/` into the web root |
+| Own domain on Pages | add a `CNAME` file, or set the custom domain in repo settings |
+
+The only external runtime requests are the CARTO basemap tiles. Everything
+else — Leaflet, all data, all styling — is served from the same origin, so the
+site also works behind a firewall and renders identically offline apart from
+the basemap. If you ever need to drop CARTO too, swap the tile URL in
+`site/app.js` for any other tile provider (or self-host tiles).
+
+Because the data is pre-built JSON, adding a backend later is optional rather
+than required: the fetch/build scripts can run anywhere on a schedule and just
+commit or upload new files.
+
 ## Where the data comes from and where it lives
 
 Every number on the map traces to one of these. Nothing is estimated or
@@ -186,6 +215,23 @@ scripts/fetch-amenities.js    OSM/Overpass points -> scripts/raw-amenities/
 scripts/build-amenities.js    amenity scores -> site/data/<city>/amenities.json
 scripts/lib/xlsx-lite.js      dependency-free xlsx reader (for the bond files)
 scripts/qgso-sa2-ids.json     QGSO region ids for SA2 profile requests
-site/                         the website (Leaflet, no build step)
+site/index.html               page shell
+site/style.css                design tokens + chrome styles (light & dark)
+site/app.js                   map, views, ranked lists, detail inspector
+site/vendor/leaflet/          vendored Leaflet (no CDN dependency)
 site/data/<city>/             committed data the site loads
 ```
+
+## Design notes
+
+- **Two type roles**: a UI grotesque for interface text, and a monospace face
+  with tabular numerals for every figure — prices, yields, counts, dates — so
+  columns align and digits never reflow. No webfont is loaded, which keeps the
+  page fast, offline-capable and free of third-party requests.
+- **Cool slate neutrals** so the data colours (which carry meaning) advance and
+  the chrome recedes. All interface text clears WCAG AA 4.5:1 in both themes.
+- **Three themes states**: follow system, force light, force dark — the toggle
+  persists in `localStorage` and the basemap follows it.
+- **Colour is never the only encoding**: every shaded area also carries its
+  value as a map label, and ranked-list rows repeat the map colour as a swatch
+  beside the name and number.
