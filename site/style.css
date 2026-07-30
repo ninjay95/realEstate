@@ -439,6 +439,58 @@ body {
 .data-table .strong { color: var(--ink); font-weight: 600; }
 .data-table .sub { display: block; font-size: 11px; color: var(--muted); }
 
+/* mortgage calculator */
+.calc {
+  padding: 11px 12px 9px;
+  background: var(--surface-sunken);
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+}
+.calc-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 9px 10px; }
+.calc-field { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.calc-label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.calc-input {
+  width: 100%;
+  padding: 6px 8px;
+  font-family: var(--font-num);
+  font-variant-numeric: tabular-nums;
+  font-size: 13px;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--rule-strong);
+  border-radius: 7px;
+}
+.calc-input:focus { border-color: var(--accent); }
+.calc-headline {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 11px;
+  padding-top: 10px;
+  border-top: 1px solid var(--rule);
+}
+.calc-headline-value { font-size: 22px; font-weight: 680; letter-spacing: -0.02em; line-height: 1.1; }
+.calc-headline-value .unit { font-size: 12px; font-weight: 500; color: var(--muted); }
+.calc-headline-label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--muted);
+  text-align: right;
+  line-height: 1.35;
+}
+.calc-table { margin-top: 4px; }
+.calc-note { margin-top: 9px; font-size: 10.5px; line-height: 1.5; }
+.calc-flag { margin: 8px 0 0; font-size: 11px; color: var(--bad); }
+
 /* sparkline */
 .spark-card {
   padding: 10px 12px 8px;

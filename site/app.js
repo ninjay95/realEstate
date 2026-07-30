@@ -105,6 +105,126 @@ function combinedScore(stats, am, rent) {
   return Math.round((100 * parts.reduce((sum, [w, v]) => sum + w * v, 0)) / weight);
 }
 
+/* --- mortgage calculator -------------------------------------------------
+ * Assumptions are the viewer's, not ours: the fields are inputs, prefilled
+ * with the suburb's median price and remembered between suburbs. Output is a
+ * plain principal-and-interest amortisation, compared against the real median
+ * rent for the same area so the cash-flow gap is visible.
+ */
+const LOAN_DEFAULTS = { depositPct: 20, ratePct: 6, termYears: 30 };
+let loanInputs = (() => {
+  try {
+    const saved = JSON.parse(localStorage.getItem("loanInputs") || "{}");
+    return { ...LOAN_DEFAULTS, ...saved };
+  } catch { return { ...LOAN_DEFAULTS }; }
+})();
+
+const audFmt = new Intl.NumberFormat("en-AU", { style: "currency", currency: "AUD", maximumFractionDigits: 0 });
+const fmtAud = (v) => (v == null || !Number.isFinite(v) ? "—" : audFmt.format(v));
+
+function monthlyRepayment(principal, annualRatePct, years) {
+  const n = Math.round(years * 12);
+  if (!(principal > 0) || !(n > 0)) return 0;
+  const r = annualRatePct / 100 / 12;
+  if (!(r > 0)) return principal / n;
+  return (principal * r) / (1 - Math.pow(1 + r, -n));
+}
+
+function mortgageSectionHtml(s) {
+  const field = (id, label, value, attrs) =>
+    `<label class="calc-field" for="${id}">
+       <span class="calc-label">${label}</span>
+       <input class="calc-input num" id="${id}" type="number" inputmode="decimal" ${attrs} value="${value}" />
+     </label>`;
+  return `<span class="eyebrow">Repayments</span>
+    <div class="calc">
+      <div class="calc-grid">
+        ${field("calc-price", "Purchase price", s.medianValue ?? "", 'min="0" step="10000"')}
+        ${field("calc-deposit", "Deposit %", loanInputs.depositPct, 'min="0" max="100" step="1"')}
+        ${field("calc-rate", "Rate % p.a.", loanInputs.ratePct, 'min="0" max="20" step="0.05"')}
+        ${field("calc-term", "Term (years)", loanInputs.termYears, 'min="1" max="40" step="1"')}
+      </div>
+      <div id="calc-out" aria-live="polite"></div>
+      <p class="hint hint-quiet calc-note">Your assumptions, not a quote. Principal and interest only — excludes stamp duty, rates, strata, insurance and any lenders mortgage insurance.</p>
+    </div>`;
+}
+
+function renderLoanOutputs(rent) {
+  const out = document.getElementById("calc-out");
+  if (!out) return;
+  const val = (id) => Number(document.getElementById(id).value);
+  const price = val("calc-price");
+  const depositPct = Math.min(100, Math.max(0, val("calc-deposit")));
+  const ratePct = val("calc-rate");
+  const termYears = val("calc-term");
+
+  if (!(price > 0) || !(termYears > 0)) {
+    out.innerHTML = '<p class="hint hint-quiet" style="margin-top:10px">Enter a price and term to see repayments.</p>';
+    return;
+  }
+
+  const deposit = price * (depositPct / 100);
+  const loan = Math.max(0, price - deposit);
+  const monthly = monthlyRepayment(loan, ratePct, termYears);
+  const weekly = (monthly * 12) / 52;
+  const totalInterest = monthly * Math.round(termYears * 12) - loan;
+
+  const rows = [
+    ["Loan amount", fmtAud(loan)],
+    ["Deposit", fmtAud(deposit)],
+    ["Weekly equivalent", fmtAud(weekly)],
+    ["Total interest over term", fmtAud(totalInterest)],
+  ];
+
+  let rentBlock = "";
+  if (rent && rent.medianWeeklyRent) {
+    const rentMonthly = (rent.medianWeeklyRent * 52) / 12;
+    const coverage = monthly > 0 ? (rentMonthly / monthly) * 100 : 0;
+    const gap = monthly - rentMonthly;
+    rentBlock = `<tr>
+        <td>Median rent covers</td>
+        <td class="right num strong">${coverage.toFixed(0)}%</td>
+      </tr>
+      <tr>
+        <td>${gap > 0 ? "Monthly shortfall" : "Monthly surplus"}</td>
+        <td class="right num strong ${gap > 0 ? "is-up" : "is-down"}">${fmtAud(Math.abs(gap))}</td>
+      </tr>`;
+  }
+
+  out.innerHTML = `
+    <div class="calc-headline">
+      <div class="calc-headline-value num">${fmtAud(monthly)}<span class="unit">/mo</span></div>
+      <div class="calc-headline-label">Principal &amp;<br>interest</div>
+    </div>
+    <div class="table-wrap"><table class="data-table calc-table"><tbody>
+      ${rows.map(([k, v]) => `<tr><td>${k}</td><td class="right num">${v}</td></tr>`).join("")}
+      ${rentBlock}
+    </tbody></table></div>
+    ${depositPct < 20 ? '<p class="hint calc-flag">Deposit under 20% — lenders mortgage insurance usually applies and is not included above.</p>' : ""}`;
+}
+
+function bindMortgage(rent) {
+  const ids = ["calc-price", "calc-deposit", "calc-rate", "calc-term"];
+  for (const id of ids) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    el.addEventListener("input", () => {
+      const next = {
+        depositPct: Number(document.getElementById("calc-deposit").value),
+        ratePct: Number(document.getElementById("calc-rate").value),
+        termYears: Number(document.getElementById("calc-term").value),
+      };
+      // Keep only sane values — a half-typed field shouldn't poison the defaults.
+      if (Object.values(next).every((v) => Number.isFinite(v))) {
+        loanInputs = next;
+        try { localStorage.setItem("loanInputs", JSON.stringify(loanInputs)); } catch { /* private mode */ }
+      }
+      renderLoanOutputs(rent);
+    });
+  }
+  renderLoanOutputs(rent);
+}
+
 /* --- theme --------------------------------------------------------------- */
 
 const darkQuery = window.matchMedia("(prefers-color-scheme: dark)");
@@ -590,6 +710,7 @@ function showDetail(name) {
     <p class="hint hint-quiet">As at ${esc(s.medianAsOf || "latest period")}${s.salesInWindow ? ` · ${s.salesInWindow} sales in the window` : ""}.</p>
 
     ${rentSectionHtml(rent)}
+    ${mortgageSectionHtml(s)}
     ${amenitySectionHtml(am)}
 
     <span class="eyebrow">Median history${s.trendClass ? ` · ${esc(s.trendClass)}` : ""}</span>
@@ -604,6 +725,7 @@ function showDetail(name) {
     ${provenanceHtml()}`;
 
   document.getElementById("detail-back").addEventListener("click", restoreDefaultPanel);
+  bindMortgage(rent);
   document.getElementById("panel").scrollTop = 0;
 }
 

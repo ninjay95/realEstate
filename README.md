@@ -11,8 +11,11 @@ colours them by their **real** recent median-price trend:
 - **Red** — still **expensive**: flat-to-rising or climbing.
 
 Clicking an area (or an entry in the ranked panel) opens a detail view with
-the median value, trend, a price-history sparkline, sales detail and an
-amenity breakdown. A search box and a Sydney/Brisbane switcher sit in the
+the median value, trend, a price-history sparkline, sales detail, an amenity
+breakdown, and a **mortgage calculator** prefilled with that area's median
+price. The calculator shows the principal-and-interest repayment plus how much
+of it the area's real median rent would cover — your deposit, rate and term
+assumptions carry across suburbs. A search box and a Sydney/Brisbane switcher sit in the
 header, plus a view switcher:
 
 - **Trend** — the green/red choropleth above.
@@ -147,6 +150,10 @@ npm run build:amenities
   small-suburb yield can be skewed by neighbours sharing its postcode. Rent
   and price periods also differ slightly (rents to mid-2026, Brisbane prices
   to Dec 2025).
+- The mortgage calculator is a plain amortisation of **your own** inputs, not a
+  quote or a rate we source from anywhere. It covers principal and interest
+  only — no stamp duty, rates, strata, insurance or lenders mortgage insurance
+  — so a real cost of holding is higher than the figure shown.
 - Nothing here is financial advice — it's a map of public records.
 
 ## Technology, and moving off GitHub Pages
