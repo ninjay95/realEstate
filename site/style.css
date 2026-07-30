@@ -439,6 +439,35 @@ body {
 .data-table .strong { color: var(--ink); font-weight: 600; }
 .data-table .sub { display: block; font-size: 11px; color: var(--muted); }
 
+/* cross-type reference — jump to the same suburb as the other property type */
+.cross-class {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  margin-top: 10px;
+  padding: 8px 11px;
+  font: inherit;
+  color: var(--ink);
+  background: var(--surface-sunken);
+  border: 1px solid var(--rule);
+  border-radius: 9px;
+  cursor: pointer;
+  text-align: left;
+  transition: background-color 120ms ease, border-color 120ms ease;
+}
+.cross-class:hover { background: var(--accent-wash); border-color: var(--rule-strong); }
+.cross-class-label {
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.cross-class-value { font-size: 13px; font-weight: 650; }
+.cross-class-rate { font-size: 12px; font-weight: 600; margin-left: auto; }
+.cross-class-go { color: var(--accent); font-weight: 700; }
+
 /* mortgage calculator */
 .calc {
   padding: 11px 12px 9px;

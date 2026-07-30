@@ -1,6 +1,9 @@
 /* Suburb Opportunity Map
  *
- * Four views over public property records:
+ * Houses and units are separate markets, so every measure is computed per
+ * dwelling class and the whole map reads against the selected type.
+ *
+ * Four views:
  *   trend      — median price movement (%/month)
  *   yield      — gross rental yield from bond lodgements
  *   amenities  — transit / schools / shopping access from OpenStreetMap
@@ -17,6 +20,10 @@ const CITIES = {
   sydney: { label: "Sydney", dir: "data/sydney", center: [-33.85, 151.08], zoom: 11, areaWord: "suburbs" },
   brisbane: { label: "Brisbane", dir: "data/brisbane", center: [-27.47, 153.02], zoom: 10, areaWord: "SA2 areas" },
 };
+const CLASS_LABEL = { houses: "houses", units: "units" };
+const CLASS_TITLE = { houses: "Houses", units: "Units" };
+const CLASS_NOUN = { houses: "house", units: "unit" }; // adjectival: "house sales"
+const OTHER_CLASS = { houses: "units", units: "houses" };
 
 /* --- colour scales -------------------------------------------------------
  * Validated palettes: trend is diverging (green = falling, red = rising) with a
@@ -107,16 +114,14 @@ function combinedScore(stats, am, rent) {
 
 /* --- mortgage calculator -------------------------------------------------
  * Assumptions are the viewer's, not ours: the fields are inputs, prefilled
- * with the suburb's median price and remembered between suburbs. Output is a
- * plain principal-and-interest amortisation, compared against the real median
- * rent for the same area so the cash-flow gap is visible.
+ * with the selected type's median price and remembered between suburbs. Output
+ * is a plain principal-and-interest amortisation, compared against the real
+ * median rent for the same area and type so the cash-flow gap is visible.
  */
 const LOAN_DEFAULTS = { depositPct: 20, ratePct: 6, termYears: 30 };
 let loanInputs = (() => {
-  try {
-    const saved = JSON.parse(localStorage.getItem("loanInputs") || "{}");
-    return { ...LOAN_DEFAULTS, ...saved };
-  } catch { return { ...LOAN_DEFAULTS }; }
+  try { return { ...LOAN_DEFAULTS, ...JSON.parse(localStorage.getItem("loanInputs") || "{}") }; }
+  catch { return { ...LOAN_DEFAULTS }; }
 })();
 
 const audFmt = new Intl.NumberFormat("en-AU", { style: "currency", currency: "AUD", maximumFractionDigits: 0 });
@@ -130,7 +135,7 @@ function monthlyRepayment(principal, annualRatePct, years) {
   return (principal * r) / (1 - Math.pow(1 + r, -n));
 }
 
-function mortgageSectionHtml(s) {
+function mortgageSectionHtml(stats) {
   const field = (id, label, value, attrs) =>
     `<label class="calc-field" for="${id}">
        <span class="calc-label">${label}</span>
@@ -139,7 +144,7 @@ function mortgageSectionHtml(s) {
   return `<span class="eyebrow">Repayments</span>
     <div class="calc">
       <div class="calc-grid">
-        ${field("calc-price", "Purchase price", s.medianValue ?? "", 'min="0" step="10000"')}
+        ${field("calc-price", "Purchase price", stats.medianValue ?? "", 'min="0" step="10000"')}
         ${field("calc-deposit", "Deposit %", loanInputs.depositPct, 'min="0" max="100" step="1"')}
         ${field("calc-rate", "Rate % p.a.", loanInputs.ratePct, 'min="0" max="20" step="0.05"')}
         ${field("calc-term", "Term (years)", loanInputs.termYears, 'min="1" max="40" step="1"')}
@@ -181,14 +186,9 @@ function renderLoanOutputs(rent) {
     const rentMonthly = (rent.medianWeeklyRent * 52) / 12;
     const coverage = monthly > 0 ? (rentMonthly / monthly) * 100 : 0;
     const gap = monthly - rentMonthly;
-    rentBlock = `<tr>
-        <td>Median rent covers</td>
-        <td class="right num strong">${coverage.toFixed(0)}%</td>
-      </tr>
-      <tr>
-        <td>${gap > 0 ? "Monthly shortfall" : "Monthly surplus"}</td>
-        <td class="right num strong ${gap > 0 ? "is-up" : "is-down"}">${fmtAud(Math.abs(gap))}</td>
-      </tr>`;
+    rentBlock = `<tr><td>Median rent covers</td><td class="right num strong">${coverage.toFixed(0)}%</td></tr>
+      <tr><td>${gap > 0 ? "Monthly shortfall" : "Monthly surplus"}</td>
+          <td class="right num strong ${gap > 0 ? "is-up" : "is-down"}">${fmtAud(Math.abs(gap))}</td></tr>`;
   }
 
   out.innerHTML = `
@@ -204,8 +204,7 @@ function renderLoanOutputs(rent) {
 }
 
 function bindMortgage(rent) {
-  const ids = ["calc-price", "calc-deposit", "calc-rate", "calc-term"];
-  for (const id of ids) {
+  for (const id of ["calc-price", "calc-deposit", "calc-rate", "calc-term"]) {
     const el = document.getElementById(id);
     if (!el) continue;
     el.addEventListener("input", () => {
@@ -214,7 +213,6 @@ function bindMortgage(rent) {
         ratePct: Number(document.getElementById("calc-rate").value),
         termYears: Number(document.getElementById("calc-term").value),
       };
-      // Keep only sane values — a half-typed field shouldn't poison the defaults.
       if (Object.values(next).every((v) => Number.isFinite(v))) {
         loanInputs = next;
         try { localStorage.setItem("loanInputs", JSON.stringify(loanInputs)); } catch { /* private mode */ }
@@ -270,6 +268,7 @@ darkQuery.addEventListener("change", () => { if (themePref === "system") applyTh
 
 let currentCity = "sydney";
 let currentMode = "trend";
+let currentClass = localStorage.getItem("propertyClass") === "units" ? "units" : "houses";
 let market = {}, marketMeta = {};
 let amenities = {}, amenityMeta = {};
 let rents = {}, rentMeta = {};
@@ -278,25 +277,32 @@ let geoLayer = null;
 const labelLayer = L.layerGroup();
 const suburbIndex = new Map();
 let defaultPanelHtml = "";
+let openSuburb = null;
 const panelContent = document.getElementById("panel-content");
 
+// Per-class accessors — every measure below reads through these.
+const statsOf = (name, cls = currentClass) => (market[name] ? market[name][cls] : null);
+const rentOf = (name, cls = currentClass) => (rents[name] ? rents[name][cls] : null);
+const amOf = (name) => amenities[name] || null; // amenities are class-independent
+
 function modeValue(name) {
-  const entry = suburbIndex.get(name) || { stats: market[name], am: amenities[name], rent: rents[name] };
-  const { stats, am, rent } = entry;
+  const stats = statsOf(name);
   if (currentMode === "trend") {
     if (!stats || stats.monthlyChangePct == null) return null;
     const r = fmtRate(stats.monthlyChangePct);
     return { v: stats.monthlyChangePct, text: r.text + "/mo", cls: r.cls, asc: true };
   }
   if (currentMode === "yield") {
+    const rent = rentOf(name);
     if (!rent || rent.grossYieldPct == null) return null;
     return { v: rent.grossYieldPct, text: `${rent.grossYieldPct.toFixed(1)}%`, cls: "is-flat", asc: false };
   }
   if (currentMode === "amenities") {
+    const am = amOf(name);
     if (!am) return null;
     return { v: am.scores.total, text: am.scores.total.toFixed(1), cls: "is-flat", asc: false };
   }
-  const score = combinedScore(stats, am, rent);
+  const score = combinedScore(stats, amOf(name), rentOf(name));
   if (score == null) return null;
   return { v: score, text: String(score), cls: "is-flat", asc: false };
 }
@@ -318,22 +324,22 @@ function styleFor(feature) {
 }
 
 const MODE_TITLES = {
-  trend: () => `Price trend · ${marketMeta.trendLabel || ""}`,
-  yield: () => "Gross rental yield",
+  trend: () => `${CLASS_TITLE[currentClass]} · price trend · ${marketMeta.trendLabel || ""}`,
+  yield: () => `${CLASS_TITLE[currentClass]} · gross rental yield`,
   amenities: () => "Amenity access · 0–10",
-  combined: () => "Opportunity rating · 0–100",
+  combined: () => `${CLASS_TITLE[currentClass]} · opportunity rating · 0–100`,
 };
 const MODE_HEADINGS = {
-  trend: "Fastest-falling medians",
-  yield: "Highest gross yields",
-  amenities: "Best-served areas",
-  combined: "Strongest opportunity ratings",
+  trend: () => `${CLASS_TITLE[currentClass]} — fastest-falling medians`,
+  yield: () => `${CLASS_TITLE[currentClass]} — highest gross yields`,
+  amenities: () => "Best-served areas",
+  combined: () => `${CLASS_TITLE[currentClass]} — strongest ratings`,
 };
 const MODE_HINTS = {
-  trend: "Where median prices have dropped most — the cooling end of the market.",
-  yield: "Annual rent as a share of the median price, from real bond lodgements.",
-  amenities: "Transit, schools and shopping access scored from mapped locations.",
-  combined: "Price momentum, rental yield and amenity access, combined.",
+  trend: () => `Where ${CLASS_LABEL[currentClass]} medians have dropped most — the cooling end of the market.`,
+  yield: () => `Annual rent as a share of the ${CLASS_LABEL[currentClass]} median, from real bond lodgements.`,
+  amenities: () => "Transit, schools and shopping access scored from mapped locations. Independent of property type.",
+  combined: () => `Price momentum, rental yield and amenity access for ${CLASS_LABEL[currentClass]}, combined.`,
 };
 
 /* --- loading ------------------------------------------------------------- */
@@ -352,6 +358,7 @@ async function loadCity(city) {
   if (geoLayer) { map.removeLayer(geoLayer); geoLayer = null; }
   labelLayer.clearLayers();
   suburbIndex.clear();
+  openSuburb = null;
 
   const optional = (url) =>
     fetch(url).then((r) => (r.ok ? r.json() : { suburbs: {} })).catch(() => ({ suburbs: {} }));
@@ -373,13 +380,7 @@ async function loadCity(city) {
     style: styleFor,
     onEachFeature: (feature, layer) => {
       const name = feature.properties.name;
-      suburbIndex.set(name, {
-        layer,
-        centroid: feature.properties.centroid,
-        stats: market[name],
-        am: amenities[name],
-        rent: rents[name],
-      });
+      suburbIndex.set(name, { layer, centroid: feature.properties.centroid });
       layer.on({
         mouseover: (e) => { e.target.setStyle({ weight: 2.5, fillOpacity: 0.75 }); e.target.bringToFront(); },
         mouseout: (e) => geoLayer.resetStyle(e.target),
@@ -402,16 +403,32 @@ function setMode(mode) {
   refreshMode();
 }
 
+function setClass(cls, keepOpen = true) {
+  currentClass = cls;
+  try { localStorage.setItem("propertyClass", cls); } catch { /* private mode */ }
+  document.querySelectorAll("[id^=class-]").forEach((b) => {
+    const active = b.id === `class-${cls}`;
+    b.classList.toggle("is-active", active);
+    b.setAttribute("aria-selected", String(active));
+  });
+  const reopen = keepOpen ? openSuburb : null;
+  refreshMode();
+  // Staying on the same suburb while flipping type is the whole point of the
+  // control — rebuild the detail rather than dumping the viewer back to a list.
+  if (reopen && statsOf(reopen)) showDetail(reopen);
+}
+
 function refreshMode() {
   if (!geoLayer) return;
   geoLayer.setStyle(styleFor);
   suburbIndex.forEach((entry, name) => {
+    const stats = statsOf(name);
     const mv = modeValue(name);
-    const price = entry.stats && entry.stats.medianValue ? `${fmtMoney(entry.stats.medianValue)} median` : null;
+    const price = stats && stats.medianValue ? `${fmtMoney(stats.medianValue)} median` : null;
     const line = [price, mv ? mv.text : "insufficient data"].filter(Boolean).join(" · ");
     entry.layer.unbindTooltip();
     entry.layer.bindTooltip(
-      `<strong>${esc(name)}</strong><br><span class="tip-line">${line}</span>`,
+      `<strong>${esc(name)}</strong><br><span class="tip-line">${CLASS_TITLE[currentClass]} · ${line}</span>`,
       { sticky: true, className: "suburb-tip" }
     );
   });
@@ -463,8 +480,6 @@ function buildLegend() {
   if (legendControl) map.removeControl(legendControl);
   legendControl = L.control({ position: "bottomleft" });
   legendControl.onAdd = () => {
-    // Collapsible: open on desktop, folded away on small screens where the map
-    // needs the room. The viewer's choice persists across mode switches.
     const wide = window.matchMedia("(min-width: 901px)").matches;
     const open = legendOpen === null ? wide : legendOpen;
     const el = L.DomUtil.create("details", "legend");
@@ -476,7 +491,7 @@ function buildLegend() {
         .map((b) => `<div class="legend-row"><span class="legend-swatch" style="background:${b.color}"></span>${b.label}</div>`)
         .join("") +
       `<div class="legend-row"><span class="legend-swatch" style="background:${NO_DATA_COLOR};opacity:.45"></span>Insufficient data</div>` +
-      `<p class="legend-note">${MODE_HINTS[currentMode]}</p></div>`;
+      `<p class="legend-note">${MODE_HINTS[currentMode]()}</p></div>`;
     el.addEventListener("toggle", () => { legendOpen = el.open; });
     L.DomEvent.disableClickPropagation(el);
     L.DomEvent.disableScrollPropagation(el);
@@ -488,18 +503,16 @@ function buildLegend() {
 /* --- panel: ranked list -------------------------------------------------- */
 
 function citySummaryHtml() {
-  const all = Object.values(market);
-  const cooling = all.filter((s) => s.monthlyChangePct != null && s.monthlyChangePct <= -0.25).length;
-  const yields = Object.values(rents).map((r) => r.grossYieldPct).filter((v) => v != null);
-  const medYield = median(yields);
-  const amScores = Object.values(amenities).map((a) => a.scores.total);
-  const medAm = median(amScores);
-  const medPrice = median(all.map((s) => s.medianValue).filter((v) => v != null));
+  const all = [...suburbIndex.keys()];
+  const cooling = all.filter((n) => { const s = statsOf(n); return s && s.monthlyChangePct != null && s.monthlyChangePct <= -0.25; }).length;
+  const medPrice = median(all.map((n) => statsOf(n)?.medianValue).filter((v) => v != null));
+  const medYield = median(all.map((n) => rentOf(n)?.grossYieldPct).filter((v) => v != null));
+  const medAm = median(all.map((n) => amOf(n)?.scores.total).filter((v) => v != null));
   const cell = (value, label) =>
     `<div class="summary-cell"><div class="summary-value num">${value}</div><div class="summary-label">${label}</div></div>`;
   return `<div class="summary">
     ${cell(`${cooling}`, "Cooling areas")}
-    ${cell(medPrice != null ? fmtMoney(medPrice) : "—", "Median price")}
+    ${cell(medPrice != null ? fmtMoney(medPrice) : "—", `Median ${CLASS_LABEL[currentClass]}`)}
     ${cell(medYield != null ? `${medYield.toFixed(1)}%` : "—", "Median yield")}
     ${cell(medAm != null ? medAm.toFixed(1) : "—", "Median amenity")}
   </div>`;
@@ -516,20 +529,21 @@ function provenanceHtml() {
 
 function buildRankPanel() {
   const ranked = [...suburbIndex.keys()]
-    .map((name) => ({ name, mv: modeValue(name), entry: suburbIndex.get(name) }))
+    .map((name) => ({ name, mv: modeValue(name) }))
     .filter((x) => x.mv)
     .sort((a, b) => (a.mv.asc ? a.mv.v - b.mv.v : b.mv.v - a.mv.v))
     .slice(0, 15);
 
   const rows = ranked
-    .map(({ name, mv, entry }) => {
-      const meta = currentMode === "trend" && entry.stats && entry.stats.salesInWindow
-        ? `${entry.stats.salesInWindow} sales · ${fmtMoney(entry.stats.medianValue)}`
-        : currentMode === "yield" && entry.rent
-          ? `${entry.rent.rentSample} bonds · $${entry.rent.medianWeeklyRent}/wk`
-          : currentMode === "amenities" && entry.am
-            ? `${entry.am.facts.stationsIn} stations · ${entry.am.facts.schoolsIn} schools`
-            : entry.stats ? fmtMoney(entry.stats.medianValue) : "";
+    .map(({ name, mv }) => {
+      const stats = statsOf(name), rent = rentOf(name), am = amOf(name);
+      const meta = currentMode === "trend" && stats && stats.salesInWindow
+        ? `${stats.salesInWindow} sales · ${fmtMoney(stats.medianValue)}`
+        : currentMode === "yield" && rent
+          ? `${rent.rentSample} bonds · $${rent.medianWeeklyRent}/wk`
+          : currentMode === "amenities" && am
+            ? `${am.facts.stationsIn} stations · ${am.facts.schoolsIn} schools`
+            : stats ? fmtMoney(stats.medianValue) : "";
       return `<li><button class="rank-row" data-suburb="${esc(name)}" type="button">
         <span class="rank-swatch" style="background:${colorFor(name)}"></span>
         <span class="rank-body">
@@ -541,12 +555,17 @@ function buildRankPanel() {
     })
     .join("");
 
+  const noData = ranked.length === 0
+    ? `<p class="hint hint-quiet">No ${CLASS_LABEL[currentClass]} data for this measure. Try the other property type.</p>`
+    : "";
+
   panelContent.innerHTML = `
-    <h2 class="panel-heading">${MODE_HEADINGS[currentMode]}</h2>
-    <p class="hint">${CITIES[currentCity].label} · ${MODE_HINTS[currentMode]}</p>
+    <h2 class="panel-heading">${MODE_HEADINGS[currentMode]()}</h2>
+    <p class="hint">${CITIES[currentCity].label} · ${MODE_HINTS[currentMode]()}</p>
     ${citySummaryHtml()}
-    <span class="eyebrow">Top 15 · click for detail</span>
+    <span class="eyebrow">Top ${ranked.length} · click for detail</span>
     <ol class="rank-list" id="opportunity-list">${rows}</ol>
+    ${noData}
     ${provenanceHtml()}`;
   defaultPanelHtml = panelContent.innerHTML;
   bindRankRows();
@@ -559,6 +578,7 @@ function bindRankRows() {
 }
 
 function restoreDefaultPanel() {
+  openSuburb = null;
   panelContent.innerHTML = defaultPanelHtml;
   bindRankRows();
 }
@@ -602,19 +622,18 @@ function sparklineSvg(history) {
 function rentSectionHtml(rent) {
   if (!rent || rent.medianWeeklyRent == null) {
     return `<span class="eyebrow">Rent &amp; yield</span>
-      <p class="hint hint-quiet">Too few bond lodgements here to publish a rent median.</p>`;
+      <p class="hint hint-quiet">Too few bond lodgements for ${CLASS_LABEL[currentClass]} here to publish a rent median.</p>`;
   }
-  const beds = Object.entries(rent.byBedrooms || {});
-  const bedRows = beds
+  const bedRows = Object.entries(rent.byBedrooms || {})
     .map(([k, v]) => `<tr><td>${/^\d+$/.test(k) ? `${k} bedroom` : esc(k)}</td><td class="right num">${v.count}</td><td class="right num strong">$${v.median}</td></tr>`)
     .join("");
-  return `<span class="eyebrow">Rent &amp; yield · ${esc(rent.rentClass)}</span>
+  return `<span class="eyebrow">Rent &amp; yield</span>
     <div class="metrics">
       <div class="metric"><div class="metric-label">Median rent</div><div class="metric-value num">$${rent.medianWeeklyRent}<span class="unit">/wk</span></div></div>
       <div class="metric"><div class="metric-label">Gross yield</div><div class="metric-value num">${rent.grossYieldPct != null ? rent.grossYieldPct + "%" : "—"}</div></div>
       <div class="metric"><div class="metric-label">Bonds</div><div class="metric-value num">${rent.rentSample}</div></div>
     </div>
-    <p class="hint hint-quiet">Measured at ${esc(rent.rentScope || "area")} level${rent.priceUsed ? `, against the ${esc(rent.rentClass)} median of ${fmtMoney(rent.priceUsed)}` : ""}. Gross — before strata, rates and vacancy.</p>
+    <p class="hint hint-quiet">Measured at ${esc(rent.rentScope || "area")} level${rent.priceUsed ? `, against the ${CLASS_LABEL[currentClass]} median of ${fmtMoney(rent.priceUsed)}` : ""}. Gross — before strata, rates and vacancy.</p>
     ${bedRows ? `<div class="table-wrap"><table class="data-table"><thead><tr><th>Size</th><th class="right">Bonds</th><th class="right">Rent/wk</th></tr></thead><tbody>${bedRows}</tbody></table></div>` : ""}`;
 }
 
@@ -645,53 +664,65 @@ function amenitySectionHtml(am) {
     </tbody></table></div>`;
 }
 
-function salesSectionHtml(s) {
-  if (s.sales && s.sales.length) {
-    const rows = s.sales
-      .map((sale) => `<tr><td class="num">${sale.date.slice(2)}</td><td>${esc(sale.address)}<span class="sub">${esc(sale.type)}</span></td><td class="right num strong">${fmtMoney(sale.price)}</td></tr>`)
+function salesSectionHtml(stats) {
+  if (stats.sales && stats.sales.length) {
+    const rows = stats.sales
+      .map((sale) => `<tr><td class="num">${sale.date.slice(2)}</td><td>${esc(sale.address)}</td><td class="right num strong">${fmtMoney(sale.price)}</td></tr>`)
       .join("");
-    return `<span class="eyebrow">Recent sales · ${s.sales.length} most recent</span>
+    return `<span class="eyebrow">Recent ${CLASS_NOUN[currentClass]} sales</span>
       <div class="table-wrap"><table class="data-table">
-        <thead><tr><th>Date</th><th>Property</th><th class="right">Price</th></tr></thead>
+        <thead><tr><th>Date</th><th>Address</th><th class="right">Price</th></tr></thead>
         <tbody>${rows}</tbody></table></div>`;
   }
-  if (s.salesSummary) {
-    const sum = s.salesSummary;
-    const row = (label, d) =>
-      d && (d.count != null || d.median != null)
-        ? `<tr><td>${label}</td><td class="right num">${d.count ?? "—"}</td><td class="right num strong">${fmtMoney(d.median)}</td></tr>`
-        : "";
+  if (stats.salesSummary) {
+    const sum = stats.salesSummary;
     const prior = (sum.priorYears || [])
-      .map((y) => `<tr><td class="num">${y.year}</td><td class="right num">${y.houseCount ?? "—"}</td><td class="right num">${fmtMoney(y.houseMedian)}</td><td class="right num">${y.unitCount ?? "—"}</td><td class="right num">${fmtMoney(y.unitMedian)}</td></tr>`)
+      .map((y) => `<tr><td class="num">${y.year}</td><td class="right num">${y.count ?? "—"}</td><td class="right num strong">${fmtMoney(y.median)}</td></tr>`)
       .join("");
     return `<span class="eyebrow">Sales · ${esc(sum.period)}</span>
-      <div class="table-wrap"><table class="data-table">
-        <thead><tr><th>Dwellings</th><th class="right">Sales</th><th class="right">Median</th></tr></thead>
-        <tbody>${row("Houses", sum.detached)}${row("Units", sum.attached)}${row("All", sum.total)}</tbody></table></div>
+      <div class="table-wrap"><table class="data-table"><tbody>
+        <tr><td>${CLASS_TITLE[currentClass]} sold</td><td class="right num strong">${sum.count ?? "—"}</td></tr>
+        <tr><td>Median</td><td class="right num strong">${fmtMoney(sum.median)}</td></tr>
+      </tbody></table></div>
       <span class="eyebrow">Prior years · ABS, year to 30 June</span>
       <div class="table-wrap"><table class="data-table">
-        <thead><tr><th>Year</th><th class="right">Houses</th><th class="right">Median</th><th class="right">Units</th><th class="right">Median</th></tr></thead>
+        <thead><tr><th>Year</th><th class="right">Sales</th><th class="right">Median</th></tr></thead>
         <tbody>${prior}</tbody></table></div>`;
   }
   return '<p class="hint hint-quiet">No sales detail available for this area.</p>';
 }
 
-function showDetail(name) {
-  const entry = suburbIndex.get(name);
-  if (!entry || !entry.stats) return;
-  const { stats: s, am, rent } = entry;
+function crossClassHtml(name) {
+  const other = OTHER_CLASS[currentClass];
+  const s = statsOf(name, other);
+  if (!s || s.medianValue == null) return "";
   const rate = fmtRate(s.monthlyChangePct);
-  const rating = combinedScore(s, am, rent);
-  const longChange = s.change12mPct ?? s.change18mPct;
-  const longLabel = s.change12mPct != null ? "12 months" : "Since FY24";
+  return `<button class="cross-class" id="cross-class" type="button">
+      <span class="cross-class-label">${CLASS_TITLE[other]} here</span>
+      <span class="cross-class-value num">${fmtMoney(s.medianValue)}</span>
+      <span class="cross-class-rate num ${rate.cls}">${s.monthlyChangePct == null ? "" : rate.text + "/mo"}</span>
+      <span class="cross-class-go" aria-hidden="true">→</span>
+    </button>`;
+}
+
+function showDetail(name) {
+  const stats = statsOf(name);
+  if (!stats) return;
+  openSuburb = name;
+  const am = amOf(name);
+  const rent = rentOf(name);
+  const rate = fmtRate(stats.monthlyChangePct);
+  const rating = combinedScore(stats, am, rent);
+  const longChange = stats.change12mPct ?? stats.change18mPct;
+  const longLabel = stats.change12mPct != null ? "12 months" : "Since FY24";
   const longCls = longChange == null ? "is-flat" : longChange <= -0.5 ? "is-down" : longChange >= 0.5 ? "is-up" : "is-flat";
 
   panelContent.innerHTML = `
-    <button class="back-btn" id="detail-back" type="button">← ${MODE_HEADINGS[currentMode]}</button>
+    <button class="back-btn" id="detail-back" type="button">← ${MODE_HEADINGS[currentMode]()}</button>
     <div class="detail-head">
       <div>
         <h2 class="detail-name">${esc(name)}</h2>
-        <p class="detail-sub">${CITIES[currentCity].label}${s.trendClass ? ` · ${esc(s.trendClass)} market` : ""}</p>
+        <p class="detail-sub">${CITIES[currentCity].label} · ${CLASS_TITLE[currentClass]}</p>
       </div>
       ${rating != null
         ? `<div class="rating-chip" style="--chip-accent:${bucketColor(RATING_BUCKETS, rating)}">
@@ -701,30 +732,33 @@ function showDetail(name) {
         : ""}
     </div>
 
-    <span class="eyebrow">Price</span>
+    <span class="eyebrow">${CLASS_TITLE[currentClass]} · price</span>
     <div class="metrics">
-      <div class="metric"><div class="metric-label">Median</div><div class="metric-value num">${fmtMoney(s.medianValue)}</div></div>
+      <div class="metric"><div class="metric-label">Median</div><div class="metric-value num">${fmtMoney(stats.medianValue)}</div></div>
       <div class="metric"><div class="metric-label">Per month</div><div class="metric-value num ${rate.cls}">${rate.text}</div></div>
       <div class="metric"><div class="metric-label">${longLabel}</div><div class="metric-value num ${longCls}">${longChange == null ? "—" : (longChange > 0 ? "+" : "") + longChange + "%"}</div></div>
     </div>
-    <p class="hint hint-quiet">As at ${esc(s.medianAsOf || "latest period")}${s.salesInWindow ? ` · ${s.salesInWindow} sales in the window` : ""}.</p>
+    <p class="hint hint-quiet">As at ${esc(stats.medianAsOf || "latest period")}${stats.salesInWindow ? ` · ${stats.salesInWindow} sales in the window` : ""}.</p>
+    ${crossClassHtml(name)}
 
     ${rentSectionHtml(rent)}
-    ${mortgageSectionHtml(s)}
+    ${mortgageSectionHtml(stats)}
     ${amenitySectionHtml(am)}
 
-    <span class="eyebrow">Median history${s.trendClass ? ` · ${esc(s.trendClass)}` : ""}</span>
+    <span class="eyebrow">Median history · ${CLASS_LABEL[currentClass]}</span>
     <div class="spark-card">
-      ${sparklineSvg(s.history)}
-      ${s.history && s.history.length >= 2
-        ? `<div class="spark-foot"><span class="num">${s.history[0].month} · ${fmtMoney(s.history[0].median)}</span><span class="num">${s.history[s.history.length - 1].month} · ${fmtMoney(s.history[s.history.length - 1].median)}</span></div>`
+      ${sparklineSvg(stats.history)}
+      ${stats.history && stats.history.length >= 2
+        ? `<div class="spark-foot"><span class="num">${stats.history[0].month} · ${fmtMoney(stats.history[0].median)}</span><span class="num">${stats.history[stats.history.length - 1].month} · ${fmtMoney(stats.history[stats.history.length - 1].median)}</span></div>`
         : ""}
     </div>
 
-    ${salesSectionHtml(s)}
+    ${salesSectionHtml(stats)}
     ${provenanceHtml()}`;
 
   document.getElementById("detail-back").addEventListener("click", restoreDefaultPanel);
+  const cross = document.getElementById("cross-class");
+  if (cross) cross.addEventListener("click", () => setClass(OTHER_CLASS[currentClass]));
   bindMortgage(rent);
   document.getElementById("panel").scrollTop = 0;
 }
@@ -746,6 +780,8 @@ function buildSearch() {
 
 document.getElementById("city-sydney").addEventListener("click", () => loadCity("sydney"));
 document.getElementById("city-brisbane").addEventListener("click", () => loadCity("brisbane"));
+document.getElementById("class-houses").addEventListener("click", () => setClass("houses"));
+document.getElementById("class-units").addEventListener("click", () => setClass("units"));
 for (const m of ["trend", "yield", "amenities", "combined"]) {
   document.getElementById(`mode-${m}`).addEventListener("click", () => setMode(m));
 }
@@ -756,4 +792,10 @@ document.getElementById("theme-toggle").addEventListener("click", () => {
 });
 
 applyTheme();
+// Reflect the remembered property type in the control before first paint.
+document.querySelectorAll("[id^=class-]").forEach((b) => {
+  const active = b.id === `class-${currentClass}`;
+  b.classList.toggle("is-active", active);
+  b.setAttribute("aria-selected", String(active));
+});
 loadCity("sydney");

@@ -1,7 +1,17 @@
 # Suburb Opportunity Map
 
 A local-first website that maps **Sydney** and **Brisbane** suburbs and
-colours them by their **real** recent median-price trend:
+colours them by their **real** recent median-price trend.
+
+**Houses and units are treated as separate markets** — a header switch flips
+every measure on the map (trend, yield, rating, medians, rents, recent sales,
+repayments) between the two, because they behave very differently. Sydney
+houses run a median 2.5% gross yield against 3.9% for units; a suburb can be
+cooling for units while houses climb. Amenity scores are the only
+type-independent measure. Inside a suburb panel, a one-click row jumps to the
+same suburb as the other type.
+
+Colouring:
 
 - **Green** — median values have been **falling** (potential buying
   opportunities). The monthly drop rate is shown as a label on top of each
@@ -48,10 +58,24 @@ Then open <http://localhost:5173>.
   area (via [GeoJson-Data](https://github.com/tonywr71/GeoJson-Data)).
 - **Sales**: [NSW Valuer General bulk Property Sales Information](https://www.valuergeneral.nsw.gov.au/design/bulk_psi_content/bulk_psi)
   — every property sale in NSW, updated weekly (open access, CC BY-NC-ND 4.0).
-- **Method**: residential sales grouped by suburb; median of a rolling
-  3-month window per month (minimum 10 sales per window); the trend is the
-  annualised %/month change of that median over the last 6 months. The
-  detail panel lists the suburb's actual most recent sales.
+- **Method**: residential sales grouped by suburb **and dwelling class** — a
+  sale is a unit when it carries a unit number or strata lot, otherwise a
+  house. Median of a 6-month trailing window per month (minimum 10 sales);
+  the trend is the %/month change against the window 6 months earlier
+  (minimum 15 sales at both ends). The detail panel lists the suburb's actual
+  most recent sales of the selected type.
+- **Two artifacts in this dataset are filtered out**, both found by sanity-
+  checking outputs rather than by reading docs:
+  - *Multi-lot transactions.* One deal buying several lots is recorded once
+    per lot with the **whole deal price on every row** — a single $41.2M
+    Rhodes purchase appeared as seven $41.2M "house sales", producing a $41M
+    median. They're detected by a shared dealing number, or by an identical
+    price on an identical contract date across different properties (the same
+    deal registered as separate dealings — eight St Leonards properties all
+    at $10,057,261 on one day).
+  - *Republished sales.* Weekly and yearly files overlap, so ~17,000 records
+    (11%) were being counted twice until the de-duplication key was changed to
+    stable identifiers only.
 
 Rebuild:
 
@@ -73,12 +97,14 @@ service):
 - **Historical medians**: [ABS Data by region](https://www.abs.gov.au/)
   (`ABS_REGIONAL_ASGS2021` API dataset) — annual medians of established
   house and attached-dwelling transfers per SA2, year ended 30 June.
-- **Method**: the QVAS 12-month median is compared like-for-like against
-  the ABS FY2024 median for the same dwelling class (detached preferred,
-  attached fallback), annualised over the 18 months between the two
-  periods' midpoints and expressed as %/month. Individual sale records
-  aren't available, so the detail panel shows sales counts and medians by
-  dwelling type and year instead.
+- **Method**: for each dwelling class, the QVAS 12-month median is compared
+  against **that same class's** ABS FY2024 median, annualised over the 18
+  months between the two periods' midpoints and expressed as %/month.
+  Individual sale records aren't available, so the detail panel shows sales
+  counts and medians by year instead. SA2-level medians on 10–20 sales swing
+  wildly (one outer-suburb series runs $110K → $300K → $370K on samples of
+  9–23), so a trend requires 20+ sales at both ends and moves beyond ±3%/mo
+  are suppressed as small-sample noise.
 
 Rebuild:
 
@@ -102,7 +128,11 @@ npm run build:brisbane
   flat-unit and 3/4-bedroom house medians; we combine the categories for the
   area's dominant class weighted by lodgement count.
 - **Yield** = median weekly rent × 52 ÷ median sale price, matched to the same
-  dwelling class (houses vs units) on both sides. Minimum 10 lodgements.
+  dwelling class (houses vs units) on both sides. Minimum 10 lodgements, and a
+  yield is only published when the price is **current**: a suburb whose last
+  usable median for that type is more than 6 months old (or, in Brisbane, only
+  available as the older ABS fallback) shows its median with an as-at date but
+  no yield, rather than dividing today's rent by a stale price.
 
 Rebuild:
 
