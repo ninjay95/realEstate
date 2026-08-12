@@ -20,6 +20,14 @@ Colouring:
   reliable median are shown dashed and pale.
 - **Red** — still **expensive**: flat-to-rising or climbing.
 
+**Compare mode** puts two areas side by side: hit Compare from the ranked list
+or from any suburb panel, then pick two areas from the map, the search box or
+the list. The table lines up price, trend, rent, yield, amenity scores,
+repayment and rating, marking the better value on rows where one direction is
+unambiguously preferable (falling prices, higher yield, better amenities,
+higher rating — never on price or rent, where "better" depends on your
+budget). Both areas stay badged A and B on the map.
+
 Clicking an area (or an entry in the ranked panel) opens a detail view with
 the median value, trend, a price-history sparkline, sales detail, an amenity
 breakdown, and a **mortgage calculator** prefilled with that area's median

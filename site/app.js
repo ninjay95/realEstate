@@ -278,6 +278,8 @@ const labelLayer = L.layerGroup();
 const suburbIndex = new Map();
 let defaultPanelHtml = "";
 let openSuburb = null;
+let compareMode = false;
+let compareA = null, compareB = null;
 const panelContent = document.getElementById("panel-content");
 
 // Per-class accessors — every measure below reads through these.
@@ -316,10 +318,18 @@ const colorFor = (name) => {
 // every data palette, so it reads as "this one" without impersonating a value.
 const selectStroke = () => (isDark() ? "#ffffff" : "#0f1317");
 
+// Which suburbs are currently marked: one when reading a suburb, two in
+// compare mode. Returned in slot order so the map badges match the columns.
+function selectedNames() {
+  if (compareMode) return [compareA, compareB].filter(Boolean);
+  return openSuburb ? [openSuburb] : [];
+}
+const slotOf = (name) => (compareMode ? (name === compareA ? "A" : name === compareB ? "B" : null) : null);
+
 function styleFor(feature) {
   const name = feature.properties.name;
   const mv = modeValue(name);
-  const selected = name === openSuburb;
+  const selected = selectedNames().includes(name);
   return {
     fillColor: mv ? bucketColor(bucketsFor(currentMode), mv.v) : NO_DATA_COLOR,
     fillOpacity: selected ? (mv ? 0.8 : 0.3) : (mv ? 0.58 : 0.16),
@@ -329,40 +339,48 @@ function styleFor(feature) {
   };
 }
 
-// Restyle just the two polygons that can change, rather than the whole layer.
 function setSelected(name) {
-  const previous = openSuburb;
   openSuburb = name;
-  for (const key of [previous, name]) {
-    const entry = key && suburbIndex.get(key);
-    if (entry && geoLayer) geoLayer.resetStyle(entry.layer);
+  refreshSelectionVisuals();
+}
+
+// One entry point for every selection change, so the outline, the always-on
+// label and the ordinary labels can never disagree about what is selected.
+function refreshSelectionVisuals() {
+  if (!geoLayer) return;
+  geoLayer.setStyle(styleFor);
+  for (const name of selectedNames()) {
+    const entry = suburbIndex.get(name);
+    if (entry) entry.layer.bringToFront();
   }
-  const entry = name && suburbIndex.get(name);
-  if (entry) entry.layer.bringToFront();
   buildLabels();
   buildSelectionLabel();
   syncLabelVisibility();
 }
 
-// The selected suburb's label lives on its own layer that is never hidden, so
-// the area you just clicked stays identifiable at any zoom.
+// Selected labels live on their own layer that is never hidden, so the areas
+// you picked stay identifiable at any zoom.
 const selectionLayer = L.layerGroup();
 function buildSelectionLabel() {
   selectionLayer.clearLayers();
-  if (!openSuburb || !currentGeo) { map.removeLayer(selectionLayer); return; }
-  const feature = currentGeo.features.find((f) => f.properties.name === openSuburb);
-  if (!feature) return;
-  const mv = modeValue(openSuburb);
-  // Never substitute a different measure here — a price shown under the yield
-  // view would read as a yield.
-  const value = mv ? mv.text : "no data";
-  const icon = L.divIcon({
-    className: "rate-pill is-selected",
-    html: `<span class="pill"><span class="pill-name">${esc(openSuburb)} </span><span class="pill-value ${mv ? mv.cls : "is-flat"}">${value}</span></span>`,
-    iconSize: [0, 0],
-  });
-  const [lng, lat] = feature.properties.centroid;
-  selectionLayer.addLayer(L.marker([lat, lng], { icon, interactive: false, keyboard: false }));
+  const names = selectedNames();
+  if (!names.length || !currentGeo) { map.removeLayer(selectionLayer); return; }
+  for (const name of names) {
+    const feature = currentGeo.features.find((f) => f.properties.name === name);
+    if (!feature) continue;
+    const mv = modeValue(name);
+    // Never substitute a different measure here — a price shown under the yield
+    // view would read as a yield.
+    const value = mv ? mv.text : "no data";
+    const slot = slotOf(name);
+    const icon = L.divIcon({
+      className: "rate-pill is-selected",
+      html: `<span class="pill">${slot ? `<span class="pill-slot">${slot}</span>` : ""}<span class="pill-name">${esc(name)} </span><span class="pill-value ${mv ? mv.cls : "is-flat"}">${value}</span></span>`,
+      iconSize: [0, 0],
+    });
+    const [lng, lat] = feature.properties.centroid;
+    selectionLayer.addLayer(L.marker([lat, lng], { icon, interactive: false, keyboard: false }));
+  }
   selectionLayer.addTo(map);
   selectionLayer.eachLayer((l) => l.setZIndexOffset(1000));
 }
@@ -492,6 +510,8 @@ function refreshMode() {
   buildRankPanel();
   buildSearch();
   syncLabelVisibility();
+  // buildRankPanel just overwrote the panel — put the comparison back.
+  if (compareMode) renderComparePanel();
 }
 
 /* --- map labels ---------------------------------------------------------- */
@@ -503,7 +523,7 @@ function buildLabels() {
     const name = f.properties.name;
     const mv = modeValue(name);
     if (!mv) continue;
-    if (name === openSuburb) continue; // drawn by the always-on selection layer
+    if (selectedNames().includes(name)) continue; // drawn by the selection layer
     const icon = L.divIcon({
       className: "rate-pill",
       html: `<span class="pill"><span class="pill-name">${esc(name)} </span><span class="pill-value ${mv.cls}">${mv.text}</span></span>`,
@@ -585,14 +605,16 @@ function provenanceHtml() {
   return `<p class="provenance">${rows.map(([k, v]) => `<b>${k}:</b> ${esc(v)}`).join("<br>")}</p>`;
 }
 
-function buildRankPanel() {
-  const ranked = [...suburbIndex.keys()]
+function rankedSuburbs(limit) {
+  return [...suburbIndex.keys()]
     .map((name) => ({ name, mv: modeValue(name) }))
     .filter((x) => x.mv)
     .sort((a, b) => (a.mv.asc ? a.mv.v - b.mv.v : b.mv.v - a.mv.v))
-    .slice(0, 15);
+    .slice(0, limit);
+}
 
-  const rows = ranked
+function rankRowsHtml(ranked) {
+  return ranked
     .map(({ name, mv }) => {
       const stats = statsOf(name), rent = rentOf(name), am = amOf(name);
       const meta = currentMode === "trend" && stats && stats.salesInWindow
@@ -612,13 +634,21 @@ function buildRankPanel() {
       </button></li>`;
     })
     .join("");
+}
+
+function buildRankPanel() {
+  const ranked = rankedSuburbs(15);
+  const rows = rankRowsHtml(ranked);
 
   const noData = ranked.length === 0
     ? `<p class="hint hint-quiet">No ${CLASS_LABEL[currentClass]} data for this measure. Try the other property type.</p>`
     : "";
 
   panelContent.innerHTML = `
-    <h2 class="panel-heading">${MODE_HEADINGS[currentMode]()}</h2>
+    <div class="panel-bar">
+      <h2 class="panel-heading">${MODE_HEADINGS[currentMode]()}</h2>
+      <button class="back-btn" id="rank-compare" type="button">Compare ⇄</button>
+    </div>
     <p class="hint">${CITIES[currentCity].label} · ${MODE_HINTS[currentMode]()}</p>
     ${citySummaryHtml()}
     <span class="eyebrow">Top ${ranked.length} · click for detail</span>
@@ -633,6 +663,8 @@ function bindRankRows() {
   panelContent.querySelectorAll(".rank-row").forEach((btn) => {
     btn.addEventListener("click", () => flyToSuburb(btn.dataset.suburb));
   });
+  const cmp = document.getElementById("rank-compare");
+  if (cmp) cmp.addEventListener("click", () => enterCompare(null));
 }
 
 function restoreDefaultPanel() {
@@ -644,15 +676,192 @@ function restoreDefaultPanel() {
 function flyToSuburb(name) {
   const entry = suburbIndex.get(name);
   if (!entry) return;
+  // In compare mode a click fills a slot instead of opening a suburb.
+  if (compareMode) {
+    assignCompareSlot(name);
+    panTo(name, false);
+    return;
+  }
   // Panel first: a map animation hiccup must never swallow the detail.
   showDetail(name);
+  panTo(name, true);
+}
+
+function panTo(name, zoomIn) {
+  const entry = suburbIndex.get(name);
+  if (!entry) return;
   const [lng, lat] = entry.centroid;
-  const zoom = Math.max(map.getZoom(), 13);
+  const zoom = zoomIn ? Math.max(map.getZoom(), 13) : map.getZoom();
   try {
     map.flyTo([lat, lng], zoom, { duration: 0.7 });
   } catch {
     map.setView([lat, lng], zoom, { animate: false });
   }
+}
+
+/* --- compare mode -------------------------------------------------------- */
+
+function enterCompare(a = null) {
+  compareMode = true;
+  compareA = a;
+  compareB = null;
+  openSuburb = null;
+  renderComparePanel();
+  refreshSelectionVisuals();
+}
+
+function exitCompare() {
+  compareMode = false;
+  const wasA = compareA;
+  compareA = compareB = null;
+  if (wasA && statsOf(wasA)) { showDetail(wasA); panTo(wasA, false); }
+  else { panelContent.innerHTML = defaultPanelHtml; bindRankRows(); setSelected(null); }
+}
+
+// Fill the first empty slot; once both are full, replace B so repeated clicks
+// keep A pinned and swap the challenger.
+function assignCompareSlot(name) {
+  if (compareA === name || compareB === name) return;
+  if (!compareA) compareA = name;
+  else compareB = name;
+  renderComparePanel();
+  refreshSelectionVisuals();
+}
+
+function clearCompareSlot(slot) {
+  if (slot === "A") { compareA = compareB; compareB = null; }
+  else compareB = null;
+  renderComparePanel();
+  refreshSelectionVisuals();
+}
+
+function swapCompare() {
+  [compareA, compareB] = [compareB, compareA];
+  renderComparePanel();
+  refreshSelectionVisuals();
+}
+
+// Rows where one direction is unambiguously better for a buyer. Price and rent
+// are deliberately absent — cheaper is not simply "better".
+const BETTER = { lower: -1, higher: 1 };
+
+function compareRows(a, b) {
+  const val = (name, fn) => (name ? fn(name) : null);
+  const money = (v) => (v == null ? "—" : fmtMoney(v));
+  const pct = (v, suffix = "%") => (v == null ? "—" : `${v > 0 ? "+" : ""}${v}${suffix}`);
+  const repay = (name) => {
+    const s = name && statsOf(name);
+    if (!s || s.medianValue == null) return null;
+    const loan = s.medianValue * (1 - loanInputs.depositPct / 100);
+    return monthlyRepayment(loan, loanInputs.ratePct, loanInputs.termYears);
+  };
+  const rentCover = (name) => {
+    const r = name && rentOf(name);
+    const m = repay(name);
+    if (!r || !r.medianWeeklyRent || !m) return null;
+    return ((r.medianWeeklyRent * 52) / 12 / m) * 100;
+  };
+
+  return [
+    { group: "Price" },
+    { label: "Median", a: val(a, (n) => statsOf(n)?.medianValue), b: val(b, (n) => statsOf(n)?.medianValue), fmt: money },
+    { label: "Per month", a: val(a, (n) => statsOf(n)?.monthlyChangePct), b: val(b, (n) => statsOf(n)?.monthlyChangePct), fmt: (v) => (v == null ? "—" : fmtRate(v).text + "/mo"), better: BETTER.lower, cls: (v) => (v == null ? "" : fmtRate(v).cls) },
+    { label: "Longer term", a: val(a, (n) => statsOf(n)?.change12mPct ?? statsOf(n)?.change18mPct), b: val(b, (n) => statsOf(n)?.change12mPct ?? statsOf(n)?.change18mPct), fmt: (v) => pct(v), better: BETTER.lower },
+    { label: "Sales in window", a: val(a, (n) => statsOf(n)?.salesInWindow), b: val(b, (n) => statsOf(n)?.salesInWindow), fmt: (v) => (v == null ? "—" : String(v)) },
+
+    { group: "Rent & yield" },
+    { label: "Median rent", a: val(a, (n) => rentOf(n)?.medianWeeklyRent), b: val(b, (n) => rentOf(n)?.medianWeeklyRent), fmt: (v) => (v == null ? "—" : `$${v}/wk`) },
+    { label: "Gross yield", a: val(a, (n) => rentOf(n)?.grossYieldPct), b: val(b, (n) => rentOf(n)?.grossYieldPct), fmt: (v) => (v == null ? "—" : `${v}%`), better: BETTER.higher },
+
+    { group: "Amenities" },
+    { label: "Transit", a: val(a, (n) => amOf(n)?.scores.transit), b: val(b, (n) => amOf(n)?.scores.transit), fmt: (v) => (v == null ? "—" : v.toFixed(1)), better: BETTER.higher },
+    { label: "Schools", a: val(a, (n) => amOf(n)?.scores.schools), b: val(b, (n) => amOf(n)?.scores.schools), fmt: (v) => (v == null ? "—" : v.toFixed(1)), better: BETTER.higher },
+    { label: "Shops", a: val(a, (n) => amOf(n)?.scores.shopping), b: val(b, (n) => amOf(n)?.scores.shopping), fmt: (v) => (v == null ? "—" : v.toFixed(1)), better: BETTER.higher },
+
+    { group: `Repayment · ${loanInputs.depositPct}% down, ${loanInputs.ratePct}%, ${loanInputs.termYears}yr` },
+    { label: "Monthly", a: repay(a), b: repay(b), fmt: (v) => fmtAud(v) },
+    { label: "Rent covers", a: rentCover(a), b: rentCover(b), fmt: (v) => (v == null ? "—" : `${v.toFixed(0)}%`), better: BETTER.higher },
+
+    { group: "Overall" },
+    {
+      label: "Rating", better: BETTER.higher,
+      a: val(a, (n) => combinedScore(statsOf(n), amOf(n), rentOf(n))),
+      b: val(b, (n) => combinedScore(statsOf(n), amOf(n), rentOf(n))),
+      fmt: (v) => (v == null ? "—" : String(v)),
+    },
+  ];
+}
+
+function slotHtml(slot, name) {
+  if (!name) {
+    return `<div class="cmp-slot is-empty">
+      <span class="cmp-slot-badge">${slot}</span>
+      <span class="cmp-slot-name">Pick a suburb</span>
+    </div>`;
+  }
+  return `<div class="cmp-slot">
+    <span class="cmp-slot-badge">${slot}</span>
+    <span class="cmp-slot-name" title="${esc(name)}">${esc(name)}</span>
+    <button class="cmp-slot-clear" data-clear="${slot}" type="button" aria-label="Remove ${esc(name)}">×</button>
+  </div>`;
+}
+
+function renderComparePanel() {
+  const rows = compareRows(compareA, compareB);
+  const body = rows
+    .map((r) => {
+      if (r.group) return `<tr class="cmp-group"><td colspan="3">${esc(r.group)}</td></tr>`;
+      const fa = r.fmt(r.a), fb = r.fmt(r.b);
+      let aWin = false, bWin = false;
+      if (r.better && r.a != null && r.b != null && r.a !== r.b) {
+        const aBetter = r.better === BETTER.higher ? r.a > r.b : r.a < r.b;
+        aWin = aBetter; bWin = !aBetter;
+      }
+      const cls = r.cls || (() => "");
+      return `<tr>
+        <td class="cmp-label">${esc(r.label)}</td>
+        <td class="right num ${cls(r.a)} ${aWin ? "is-better" : ""}">${fa}</td>
+        <td class="right num ${cls(r.b)} ${bWin ? "is-better" : ""}">${fb}</td>
+      </tr>`;
+    })
+    .join("");
+
+  const both = compareA && compareB;
+  panelContent.innerHTML = `
+    <button class="back-btn" id="cmp-exit" type="button">← Back</button>
+    <h2 class="panel-heading">Compare ${CLASS_LABEL[currentClass]}</h2>
+    <p class="hint">${both ? "Better value is marked in each row where one direction is clearly preferable." : "Click a suburb on the map, or search, to fill the next slot."}</p>
+
+    <div class="cmp-slots">
+      ${slotHtml("A", compareA)}
+      ${slotHtml("B", compareB)}
+    </div>
+    <div class="cmp-actions">
+      <button class="cmp-btn" id="cmp-swap" type="button" ${both ? "" : "disabled"}>Swap</button>
+      <button class="cmp-btn" id="cmp-clear" type="button" ${compareA || compareB ? "" : "disabled"}>Clear</button>
+    </div>
+
+    ${both || compareA
+      ? `<div class="table-wrap"><table class="data-table cmp-table">
+           <thead><tr><th></th><th class="right">A</th><th class="right">B</th></tr></thead>
+           <tbody>${body}</tbody>
+         </table></div>`
+      : ""}
+
+    <span class="eyebrow">${MODE_HEADINGS[currentMode]()} · click to add</span>
+    <ol class="rank-list">${rankRowsHtml(rankedSuburbs(10))}</ol>
+    ${provenanceHtml()}`;
+
+  document.getElementById("cmp-exit").addEventListener("click", exitCompare);
+  document.getElementById("cmp-swap").addEventListener("click", swapCompare);
+  document.getElementById("cmp-clear").addEventListener("click", () => enterCompare(null));
+  panelContent.querySelectorAll("[data-clear]").forEach((btn) => {
+    btn.addEventListener("click", () => clearCompareSlot(btn.dataset.clear));
+  });
+  panelContent.querySelectorAll(".rank-row").forEach((btn) => {
+    btn.addEventListener("click", () => flyToSuburb(btn.dataset.suburb));
+  });
+  document.getElementById("panel").scrollTop = 0;
 }
 
 /* --- panel: detail ------------------------------------------------------- */
@@ -776,7 +985,10 @@ function showDetail(name) {
   const longCls = longChange == null ? "is-flat" : longChange <= -0.5 ? "is-down" : longChange >= 0.5 ? "is-up" : "is-flat";
 
   panelContent.innerHTML = `
-    <button class="back-btn" id="detail-back" type="button">← ${MODE_HEADINGS[currentMode]()}</button>
+    <div class="detail-bar">
+      <button class="back-btn" id="detail-back" type="button">← ${MODE_HEADINGS[currentMode]()}</button>
+      <button class="back-btn" id="detail-compare" type="button">Compare ⇄</button>
+    </div>
     <div class="detail-head">
       <div>
         <h2 class="detail-name">${esc(name)}</h2>
@@ -815,6 +1027,10 @@ function showDetail(name) {
     ${provenanceHtml()}`;
 
   document.getElementById("detail-back").addEventListener("click", restoreDefaultPanel);
+  document.getElementById("detail-compare").addEventListener("click", () => {
+    enterCompare(name);
+    panTo(name, false);
+  });
   const cross = document.getElementById("cross-class");
   if (cross) cross.addEventListener("click", () => setClass(OTHER_CLASS[currentClass]));
   bindMortgage(rent);
