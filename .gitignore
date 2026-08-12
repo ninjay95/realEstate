@@ -3,3 +3,5 @@ scripts/nsw-suburbs-raw.geojson
 scripts/raw-nsw/
 scripts/raw-brisbane/
 scripts/raw-amenities/
+scripts/vic-suburbs-raw.geojson
+scripts/raw-melbourne/

@@ -19,6 +19,7 @@
 const CITIES = {
   sydney: { label: "Sydney", dir: "data/sydney", center: [-33.85, 151.08], zoom: 11, areaWord: "suburbs" },
   brisbane: { label: "Brisbane", dir: "data/brisbane", center: [-27.47, 153.02], zoom: 10, areaWord: "SA2 areas" },
+  melbourne: { label: "Melbourne", dir: "data/melbourne", center: [-37.87, 145.0], zoom: 10, areaWord: "suburbs" },
 };
 const CLASS_LABEL = { houses: "houses", units: "units" };
 const CLASS_TITLE = { houses: "Houses", units: "Units" };
@@ -943,18 +944,25 @@ function salesSectionHtml(stats) {
   }
   if (stats.salesSummary) {
     const sum = stats.salesSummary;
-    const prior = (sum.priorYears || [])
-      .map((y) => `<tr><td class="num">${y.year}</td><td class="right num">${y.count ?? "—"}</td><td class="right num strong">${fmtMoney(y.median)}</td></tr>`)
+    // Periods differ by city: financial years from the ABS in Brisbane,
+    // calendar quarters from the sales report in Melbourne.
+    const rows = sum.priorYears || [];
+    const quarterly = rows.some((y) => /^\d{4}-\d{2}$/.test(String(y.year)));
+    const hasCounts = rows.some((y) => y.count != null);
+    const prior = rows
+      .map((y) => `<tr><td class="num">${esc(y.year)}${y.flag ? ` <span style="color:var(--muted)">${esc(y.flag)}</span>` : ""}</td>${hasCounts ? `<td class="right num">${y.count ?? "—"}</td>` : ""}<td class="right num strong">${fmtMoney(y.median)}</td></tr>`)
       .join("");
+    const thinFlagged = rows.some((y) => y.flag === "^");
     return `<span class="eyebrow">Sales · ${esc(sum.period)}</span>
       <div class="table-wrap"><table class="data-table"><tbody>
         <tr><td>${CLASS_TITLE[currentClass]} sold</td><td class="right num strong">${sum.count ?? "—"}</td></tr>
         <tr><td>Median</td><td class="right num strong">${fmtMoney(sum.median)}</td></tr>
       </tbody></table></div>
-      <span class="eyebrow">Prior years · ABS, year to 30 June</span>
+      <span class="eyebrow">${quarterly ? "Earlier quarters" : "Prior years · ABS, year to 30 June"}</span>
       <div class="table-wrap"><table class="data-table">
-        <thead><tr><th>Year</th><th class="right">Sales</th><th class="right">Median</th></tr></thead>
-        <tbody>${prior}</tbody></table></div>`;
+        <thead><tr><th>${quarterly ? "Quarter" : "Year"}</th>${hasCounts ? '<th class="right">Sales</th>' : ""}<th class="right">Median</th></tr></thead>
+        <tbody>${prior}</tbody></table></div>
+      ${thinFlagged ? '<p class="hint hint-quiet">^ marks a quarter with fewer than ten sales.</p>' : ""}`;
   }
   return '<p class="hint hint-quiet">No sales detail available for this area.</p>';
 }
@@ -1052,8 +1060,9 @@ function buildSearch() {
 
 /* --- boot ---------------------------------------------------------------- */
 
-document.getElementById("city-sydney").addEventListener("click", () => loadCity("sydney"));
-document.getElementById("city-brisbane").addEventListener("click", () => loadCity("brisbane"));
+for (const city of Object.keys(CITIES)) {
+  document.getElementById(`city-${city}`).addEventListener("click", () => loadCity(city));
+}
 document.getElementById("class-houses").addEventListener("click", () => setClass("houses"));
 document.getElementById("class-units").addEventListener("click", () => setClass("units"));
 for (const m of ["trend", "yield", "amenities", "combined"]) {

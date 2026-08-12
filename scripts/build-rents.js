@@ -205,5 +205,145 @@ function buildBrisbane() {
   );
 }
 
+// ------------------------------------------------------------- Melbourne ----
+// The Victorian Rental Report publishes by suburb GROUP ("Collingwood-
+// Abbotsford"), one sheet per dwelling size, with (count, median) pairs across
+// quarters. A group's rent applies to each suburb named in it — the same
+// coarser-than-suburb caveat as Sydney's postcode rents, surfaced as the scope.
+function parseVicRentSheet(rows) {
+  const out = new Map();
+  for (const row of rows) {
+    if (!row || typeof row[0] !== "string" || !row[0].trim()) continue;
+    // the first row of each region carries the region in col 0 and the group
+    // in col 1; every other row has the group in col 0
+    const secondIsText = typeof row[1] === "string" && row[1].trim() && !Number.isFinite(Number(row[1]));
+    const nameIdx = secondIsText ? 1 : 0;
+    const group = String(row[nameIdx]).trim();
+    if (group.length < 3) continue;
+
+    let last = null;
+    for (let c = nameIdx + 1; c + 1 < row.length; c += 2) {
+      const count = Number(String(row[c] ?? "").replace(/[^0-9.]/g, ""));
+      const median = Number(String(row[c + 1] ?? "").replace(/[^0-9.]/g, ""));
+      if (Number.isFinite(count) && Number.isFinite(median) && count > 0 && median > 0) {
+        last = { count, median };
+      }
+    }
+    if (last) out.set(group, last);
+  }
+  return out;
+}
+
+function buildMelbourne() {
+  const rentsDir = path.join(__dirname, "raw-melbourne", "rents");
+  if (!fs.existsSync(rentsDir)) {
+    console.log("melbourne: no rent data (run scripts/fetch-melbourne-data.js), skipping");
+    return;
+  }
+  const files = fs.readdirSync(rentsDir).filter((f) => /\.xlsx$/i.test(f)).sort();
+  if (!files.length) { console.log("melbourne: no rent workbooks, skipping"); return; }
+  const file = path.join(rentsDir, files[files.length - 1]);
+
+  const SHEET_CLASS = {
+    "1 bedroom flat": "units", "2 bedroom flat": "units", "3 bedroom flat": "units",
+    "2 bedroom house": "houses", "3 bedroom house": "houses", "4 bedroom house": "houses",
+  };
+  const { sheetNames } = readSheet(file, 0);
+  const perSheet = [];
+  sheetNames.forEach((sheetName, i) => {
+    const cls = SHEET_CLASS[sheetName.trim().toLowerCase()];
+    if (!cls) return;
+    const { rows } = readSheet(file, i);
+    perSheet.push({ label: sheetName.trim(), cls, data: parseVicRentSheet(rows) });
+  });
+
+  const market = JSON.parse(fs.readFileSync(dataPath("melbourne", "market.json"), "utf8"));
+  const upperToName = new Map(Object.keys(market.suburbs).map((n) => [n.toUpperCase(), n]));
+
+  // The rental report writes compass points as a prefix ("East St Kilda")
+  // where the locality register puts them last ("St Kilda East"), so try both.
+  const DIRECTION = /^(north|south|east|west|upper|lower)\s+(.+)$/i;
+  const aliases = (part) => {
+    const out = [part];
+    const m = part.match(DIRECTION);
+    if (m) out.push(`${m[2]} ${m[1]}`);
+    const words = part.split(/\s+/);
+    if (words.length > 1 && DIRECTION.test(`${words[words.length - 1]} x`)) {
+      out.push(`${words[words.length - 1]} ${words.slice(0, -1).join(" ")}`);
+    }
+    return out;
+  };
+
+  // group -> the suburbs it covers
+  const groupSuburbs = new Map();
+  for (const { data } of perSheet) {
+    for (const group of data.keys()) {
+      if (groupSuburbs.has(group)) continue;
+      if (/^[\d\s.]+$/.test(group)) { groupSuburbs.set(group, []); continue; } // stray numeric rows
+      const parts = group.split("-").map((p) => p.trim()).filter(Boolean);
+      const matched = [group, ...parts]
+        .flatMap(aliases)
+        .map((p) => upperToName.get(p.toUpperCase()))
+        .filter(Boolean);
+      groupSuburbs.set(group, [...new Set(matched)]);
+    }
+  }
+
+  const suburbs = {};
+  const withYield = { houses: 0, units: 0 };
+  for (const [name, m] of Object.entries(market.suburbs)) {
+    const entry = {};
+    for (const cls of CLASSES) {
+      // every sheet of this class whose group covers this suburb
+      const hits = [];
+      for (const sheet of perSheet) {
+        if (sheet.cls !== cls) continue;
+        for (const [group, value] of sheet.data) {
+          if (!groupSuburbs.get(group)?.includes(name)) continue;
+          if (value.count >= MIN_RENT_SAMPLE) hits.push({ ...value, label: sheet.label, group });
+        }
+      }
+      let weekly = null, sample = 0, scope = null;
+      if (hits.length) {
+        const num = hits.reduce((s, h) => s + h.median * h.count, 0);
+        const den = hits.reduce((s, h) => s + h.count, 0);
+        weekly = Math.round(num / den);
+        sample = den;
+        scope = `suburb group ${hits[0].group}`;
+      }
+      const classRec = m[cls];
+      const price = classRec && classRec.medianIsCurrent ? classRec.medianValue : null;
+      const gross = yieldPct(weekly, price);
+      if (gross != null) withYield[cls]++;
+      entry[cls] = {
+        medianWeeklyRent: weekly,
+        rentSample: sample,
+        rentScope: scope,
+        priceUsed: price,
+        grossYieldPct: gross,
+        byBedrooms: Object.fromEntries(
+          hits.map((h) => [h.label, { median: h.median, count: h.count }])
+        ),
+      };
+    }
+    suburbs[name] = entry;
+  }
+
+  const out = {
+    generatedAt: new Date().toISOString().slice(0, 10),
+    source: "Victorian Rental Report, DFFH (Residential Tenancies Bond Authority data)",
+    method: "Moving annual median weekly rent, published by suburb group and dwelling size. Sizes are combined into houses and units weighted by bond count. Suburbs sharing a group share a rent median. Gross yield = weekly rent x 52 / the median sale price for the same class.",
+    classes: CLASSES,
+    suburbs,
+  };
+  fs.writeFileSync(dataPath("melbourne", "rents.json"), JSON.stringify(out));
+  console.log(
+    `melbourne: wrote ${Object.keys(suburbs).length} suburbs ` +
+    `(houses ${withYield.houses} yields, units ${withYield.units} yields, ` +
+    `${Math.round(fs.statSync(dataPath("melbourne", "rents.json")).size / 1024)} KB)`
+  );
+}
+
 buildSydney();
 buildBrisbane();
+buildMelbourne();

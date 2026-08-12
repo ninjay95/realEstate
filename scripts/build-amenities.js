@@ -15,7 +15,7 @@
 const fs = require("fs");
 const path = require("path");
 
-const CITIES = ["sydney", "brisbane"];
+const CITIES = ["sydney", "brisbane", "melbourne"];
 
 // --- geometry helpers -----------------------------------------------------
 const KM_PER_DEG_LAT = 111.2;

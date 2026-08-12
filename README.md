@@ -1,7 +1,7 @@
 # Suburb Opportunity Map
 
-A local-first website that maps **Sydney** and **Brisbane** suburbs and
-colours them by their **real** recent median-price trend.
+A local-first website that maps **Brisbane**, **Sydney** and **Melbourne**
+suburbs and colours them by their **real** recent median-price trend.
 
 **Houses and units are treated as separate markets** — a header switch flips
 every measure on the map (trend, yield, rating, medians, rents, recent sales,
@@ -33,7 +33,7 @@ the median value, trend, a price-history sparkline, sales detail, an amenity
 breakdown, and a **mortgage calculator** prefilled with that area's median
 price. The calculator shows the principal-and-interest repayment plus how much
 of it the area's real median rent would cover — your deposit, rate and term
-assumptions carry across suburbs. A search box and a Sydney/Brisbane switcher sit in the
+assumptions carry across suburbs. A search box and a city switcher sit in the
 header, plus a view switcher:
 
 - **Trend** — the green/red choropleth above.
@@ -150,7 +150,36 @@ npm run fetch:rents-brisbane   # ~250 QGSO requests (~7 min, throttled)
 npm run build:rents
 ```
 
-### Amenities (both cities)
+### Melbourne — quarterly suburb medians (houses and units published separately)
+
+- **Boundaries**: PSMA Victorian locality polygons filtered to Greater
+  Melbourne (same source as Sydney).
+- **Prices**: the [Victorian Property Sales Report](https://discover.data.vic.gov.au/dataset/victorian-property-sales-report-median-house-by-suburb)
+  (Land Use Victoria, CC BY 4.0) — median sale price per suburb, published
+  **already split into houses and units**, one file per quarter. Each release
+  carries five quarters and the releases overlap, so merging the published
+  files yields a continuous 13-quarter series per suburb back to Dec 2022.
+- **Method**: the latest quarter against the same quarter a year earlier,
+  expressed as %/month. The report flags quarters with fewer than ten sales
+  (`^`) and quarters carried forward because nothing sold (`*`); both ends must
+  be unflagged for a trend, and a flagged latest quarter also blocks a yield.
+- **Rents**: the [Victorian Rental Report](https://discover.data.vic.gov.au/dataset/rental-report-quarterly-moving-annual-rents-by-suburb)
+  (DFFH, from Residential Tenancies Bond Authority data) — moving annual median
+  rents by dwelling size. Published by **suburb group** ("Collingwood-
+  Abbotsford"), so suburbs sharing a group share a rent median, and the panel
+  names the group it used.
+
+These files are legacy `.xls` (OLE2/BIFF8), which no other source here uses, so
+`scripts/lib/xls-lite.js` is a small reader for that format — see the note in
+Design notes below. Rebuild:
+
+```bash
+npm run fetch:melbourne     # ~14 quarterly sales files + the rental report
+npm run build:melbourne
+npm run build:rents
+```
+
+### Amenities (all cities)
 
 Locations come from **OpenStreetMap** (© OpenStreetMap contributors, ODbL)
 via the Overpass API: `railway=station` / `public_transport=station` /
@@ -178,9 +207,12 @@ npm run build:amenities
   medians are noisy: composition shifts (more units selling than houses in
   a given window) move the median without prices changing. The rolling
   window and the 10-sale minimum reduce but don't eliminate this.
-- The two cities' trend windows differ (6 months for Sydney, 18 months for
-  Brisbane) because that's what each state's open data supports. The legend
-  and panels label the window in use.
+- The three cities' trend windows differ (6 months for Sydney, 18 for
+  Brisbane, 12 for Melbourne) because that's what each state's open data
+  supports. The legend and panels label the window in use.
+- Only Sydney exposes individual sale records; Queensland and Victoria publish
+  aggregates only, so those panels show medians and counts by period instead of
+  a list of addresses.
 - Yields are **gross**, not net: they ignore strata/body-corporate fees,
   council rates, insurance, management fees and vacancy. Net yields are
   typically 1–1.5 percentage points lower, and more for high-strata units.
@@ -236,7 +268,10 @@ synthesised.
 | Brisbane boundaries | ABS ASGS 2021 SA2 (ArcGIS API) | — (written directly) | `site/data/brisbane/suburbs.geojson` |
 | Brisbane prices | QGSO Housing Profiles (QVAS) + ABS Data by region | `scripts/raw-brisbane/` | `site/data/brisbane/market.json` |
 | Brisbane rents | RTA bond lodgements via QGSO Housing Profiles | `scripts/raw-brisbane/qgso-rents.json` | `site/data/brisbane/rents.json` |
-| Amenities (both) | OpenStreetMap via Overpass API | `scripts/raw-amenities/` | `site/data/<city>/amenities.json` |
+| Melbourne boundaries | PSMA VIC localities via GeoJson-Data | `scripts/vic-suburbs-raw.geojson` | `site/data/melbourne/suburbs.geojson` |
+| Melbourne prices | Victorian Property Sales Report (quarterly `.xls`) | `scripts/raw-melbourne/sales/` | `site/data/melbourne/market.json` |
+| Melbourne rents | Victorian Rental Report, DFFH (RTBA data) | `scripts/raw-melbourne/rents/` | `site/data/melbourne/rents.json` |
+| Amenities (all) | OpenStreetMap via Overpass API | `scripts/raw-amenities/` | `site/data/<city>/amenities.json` |
 
 The site is **static** — it only ever reads the committed JSON/GeoJSON in
 `site/data/`, so it works offline and on GitHub Pages with no backend and no
@@ -258,7 +293,10 @@ scripts/fetch-rents-brisbane.js QGSO median rents -> scripts/raw-brisbane/qgso-r
 scripts/build-rents.js        rents + gross yields -> site/data/<city>/rents.json
 scripts/fetch-amenities.js    OSM/Overpass points -> scripts/raw-amenities/
 scripts/build-amenities.js    amenity scores -> site/data/<city>/amenities.json
+scripts/fetch-melbourne-data.js VIC sales + rental report -> scripts/raw-melbourne/
+scripts/build-market-melbourne.js -> site/data/melbourne/market.json
 scripts/lib/xlsx-lite.js      dependency-free xlsx reader (for the bond files)
+scripts/lib/xls-lite.js       dependency-free legacy .xls reader (VIC sales)
 scripts/qgso-sa2-ids.json     QGSO region ids for SA2 profile requests
 site/index.html               page shell
 site/style.css                design tokens + chrome styles (light & dark)

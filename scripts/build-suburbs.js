@@ -1,19 +1,36 @@
-// Filters the raw NSW locality boundaries down to the Sydney metro area,
-// merges same-named localities into MultiPolygons, trims coordinate precision
-// and writes site/data/suburbs.geojson with name + centroid properties.
+// Filters raw state locality boundaries down to a city metro area, merges
+// same-named localities into MultiPolygons, trims coordinate precision and
+// writes site/data/<city>/suburbs.geojson with name + centroid properties.
 //
-// Input:  scripts/nsw-suburbs-raw.geojson  (suburb-2-nsw.geojson from
+// Input:  scripts/<state>-suburbs-raw.geojson (suburb-2-<state>.geojson from
 //         github.com/tonywr71/GeoJson-Data — PSMA administrative boundaries)
-// Usage:  node scripts/build-suburbs.js
+// Usage:  node scripts/build-suburbs.js [sydney|melbourne]
 
 const fs = require("fs");
 const path = require("path");
 
-const BBOX = { west: 150.88, east: 151.33, south: -34.09, north: -33.62 };
+const CITY = {
+  sydney: {
+    raw: "nsw-suburbs-raw.geojson",
+    nameField: "nsw_loca_2",
+    bbox: { west: 150.88, east: 151.33, south: -34.09, north: -33.62 },
+  },
+  melbourne: {
+    raw: "vic-suburbs-raw.geojson",
+    nameField: "vic_loca_2",
+    // Greater Melbourne: Werribee/Melton in the west out to the Dandenongs,
+    // Craigieburn in the north down to the Mornington Peninsula's neck.
+    bbox: { west: 144.55, east: 145.42, south: -38.25, north: -37.55 },
+  },
+};
 const PRECISION = 4; // ~11 m — plenty for a choropleth
 
-const rawPath = path.join(__dirname, "nsw-suburbs-raw.geojson");
-const outPath = path.join(__dirname, "..", "site", "data", "suburbs.geojson");
+const cityKey = process.argv[2] || "sydney";
+const cfg = CITY[cityKey];
+if (!cfg) throw new Error(`unknown city "${cityKey}" — expected: ${Object.keys(CITY).join(", ")}`);
+
+const rawPath = path.join(__dirname, cfg.raw);
+const outPath = path.join(__dirname, "..", "site", "data", cityKey, "suburbs.geojson");
 
 const raw = JSON.parse(fs.readFileSync(rawPath, "utf8"));
 
@@ -54,13 +71,14 @@ function roundCoords(coords) {
 
 const byName = new Map();
 for (const f of raw.features) {
-  const name = f.properties.nsw_loca_2;
+  const name = f.properties[cfg.nameField];
   if (!name || f.geometry == null) continue;
   const polys = f.geometry.type === "Polygon" ? [f.geometry.coordinates]
     : f.geometry.type === "MultiPolygon" ? f.geometry.coordinates : [];
   if (polys.length === 0) continue;
   const c = featureCentroid(polys);
-  if (c.lng < BBOX.west || c.lng > BBOX.east || c.lat < BBOX.south || c.lat > BBOX.north) continue;
+  const b = cfg.bbox;
+  if (c.lng < b.west || c.lng > b.east || c.lat < b.south || c.lat > b.north) continue;
   if (!byName.has(name)) byName.set(name, []);
   byName.get(name).push(...polys);
 }
@@ -89,4 +107,4 @@ features.sort((a, b) => a.properties.name.localeCompare(b.properties.name));
 fs.mkdirSync(path.dirname(outPath), { recursive: true });
 fs.writeFileSync(outPath, JSON.stringify({ type: "FeatureCollection", features }));
 const kb = Math.round(fs.statSync(outPath).size / 1024);
-console.log(`Wrote ${features.length} suburbs (${kb} KB) -> ${outPath}`);
+console.log(`${cityKey}: wrote ${features.length} suburbs (${kb} KB) -> ${outPath}`);

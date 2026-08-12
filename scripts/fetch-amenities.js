@@ -17,7 +17,7 @@ const path = require("path");
 
 const RAW = path.join(__dirname, "raw-amenities");
 fs.mkdirSync(RAW, { recursive: true });
-const CITIES = ["sydney", "brisbane"];
+const CITIES = ["sydney", "brisbane", "melbourne"];
 const MIRRORS = [
   "https://overpass-api.de/api/interpreter",
   "https://overpass.kumi.systems/api/interpreter",
